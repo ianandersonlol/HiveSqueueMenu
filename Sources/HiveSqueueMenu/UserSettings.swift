@@ -55,7 +55,7 @@ final class UserSettings: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let storedHost = defaults.string(forKey: Keys.host)?.nonEmpty ?? AppConfig.clusterHost
-        let storedUsername = defaults.string(forKey: Keys.username)?.nonEmpty ?? AppConfig.defaultUsername
+        let storedUsername = defaults.string(forKey: Keys.username)?.nonEmpty ?? ""
         let storedIdentity = defaults.string(forKey: Keys.identityFilePath)?.nonEmpty ?? ""
         let storedPassword = KeychainHelper.loadPassword(service: keychainService, account: storedHost) ?? ""
 
@@ -78,12 +78,19 @@ final class UserSettings: ObservableObject {
     }
 
     private func updateConnectionSettings() {
-        connectionSettings = ConnectionSettings(
+        let newSettings = ConnectionSettings(
             host: host,
             username: username,
             identityFilePath: identityFilePath.nonEmpty,
             password: password.nonEmpty
         )
+        print("[UserSettings] updateConnectionSettings - old: \(connectionSettings), new: \(newSettings), equal: \(connectionSettings == newSettings)")
+        // Only update if actually different to avoid triggering observers
+        guard connectionSettings != newSettings else {
+            print("[UserSettings] Skipping update - settings unchanged")
+            return
+        }
+        connectionSettings = newSettings
     }
 }
 
