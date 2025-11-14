@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var settings: UserSettings
+    @ObservedObject var monitor: SlurmMonitor
     @State private var availableKeys: [SSHKeyOption] = []
 
     var body: some View {
@@ -48,6 +49,10 @@ struct SettingsView: View {
         .padding(20)
         .frame(minWidth: 400)
         .onAppear(perform: reloadKeys)
+        .onChange(of: settings.connectionSettings) { oldValue, newValue in
+            print("[SettingsView] Connection settings changed: \(newValue.username)@\(newValue.host), configured: \(newValue.isConfigured)")
+            monitor.updateConnection(newValue)
+        }
     }
 
     private func reloadKeys() {

@@ -3,15 +3,12 @@ import SwiftUI
 
 @main
 struct HiveSqueueMenuApp: App {
-    @StateObject private var monitor: SlurmMonitor
-    @StateObject private var settingsStore: UserSettings
+    @StateObject private var settingsStore = UserSettings()
+    @StateObject private var monitor = SlurmMonitor()
 
     var body: some Scene {
         MenuBarExtra {
             SlurmMenuView(monitor: monitor)
-                .onReceive(settingsStore.$connectionSettings.removeDuplicates()) { newConfig in
-                    monitor.updateConnection(newConfig)
-                }
         } label: {
             Label {
                 Text(monitor.menuTitle)
@@ -23,15 +20,13 @@ struct HiveSqueueMenuApp: App {
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView(settings: settingsStore)
+            SettingsView(settings: settingsStore, monitor: monitor)
         }
     }
 
     init() {
-        let settings = UserSettings()
-        _settingsStore = StateObject(wrappedValue: settings)
-        let monitor = SlurmMonitor(connection: settings.connectionSettings)
-        _monitor = StateObject(wrappedValue: monitor)
+        print("[App] Initializing HiveSqueueMenuApp...")
         NSApplication.shared.setActivationPolicy(.accessory)
+        print("[App] Initialization complete")
     }
 }
