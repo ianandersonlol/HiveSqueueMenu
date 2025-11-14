@@ -12,5 +12,9 @@ let package = Package(
         .executableTarget(
             name: "HiveSqueueMenu"
         ),
+        .testTarget(
+            name: "HiveSqueueMenuTests",
+            dependencies: ["HiveSqueueMenu"]
+        ),
     ]
 )

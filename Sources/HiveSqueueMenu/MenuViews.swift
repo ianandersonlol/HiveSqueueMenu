@@ -11,7 +11,7 @@ struct SlurmMenuView: View {
             header
             refreshControls
             if let error = monitor.error {
-                ErrorBanner(message: error)
+                ErrorBanner(message: error, retryAction: { monitor.fetch(force: true) })
             }
             statsSection
             Divider().overlay(Color.white.opacity(0.1))
@@ -32,9 +32,11 @@ struct SlurmMenuView: View {
         monitor.lastFetchDate != nil
     }
 
+    @Environment(\.openSettings) private var openSettings
+
     private var preferencesButton: some View {
         Button("Preferences…") {
-            NSApp.sendAction(#selector(NSApplication.orderFrontSettingsWindow(_:)), to: nil, from: nil)
+            openSettings()
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }
@@ -74,14 +76,16 @@ struct SlurmMenuView: View {
 
     @ViewBuilder
     private var refreshStatusText: some View {
-        if monitor.isFetching {
-            Text("Fetching latest job list…")
-        } else if let remaining = monitor.timeUntilNextAllowedRefresh(from: now) {
-            Text("Next refresh available in \(Int(ceil(remaining)))s")
-        } else if let last = monitor.lastFetchDate {
-            Text("Last refreshed \(last, style: .relative)")
-        } else {
-            Text("Press refresh to load jobs.")
+        Group {
+            if monitor.isFetching {
+                Text("Fetching latest job list…")
+            } else if let remaining = monitor.timeUntilNextAllowedRefresh(from: now) {
+                Text("Next refresh available in \(Int(ceil(remaining)))s")
+            } else if let last = monitor.lastFetchDate {
+                Text("Last refreshed \(last, style: .relative)")
+            } else {
+                Text("Press refresh to load jobs.")
+            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -215,30 +219,41 @@ struct StateBadge: View {
 
 struct ErrorBanner: View {
     let message: String
+    var retryAction: (() -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.yellow)
-            Text(message)
-                .font(.footnote)
-                .foregroundStyle(.primary)
+            
+            VStack(alignment: .leading, spacing: 5) {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.primary)
+                
+                if let retryAction {
+                    Button("Retry", action: retryAction)
+                        .font(.footnote)
+                }
+            }
         }
-               .padding(12)
-               .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(12)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
-#Preview {
-    let connection = ConnectionSettings(host: "hive-preview", username: "icanders", identityFilePath: nil, password: nil)
-    let monitor = SlurmMonitor(connection: connection)
-    monitor.jobs = [
-        SlurmJob(id: 42, name: "train_model", partition: "gpu", state: "RUNNING"),
-        SlurmJob(id: 99, name: "data-prep", partition: "cpu", state: "PENDING")
-    ]
-    return SlurmMenuView(monitor: monitor)
-        .frame(width: 360)
-        .padding()
-        .background(.black)
-        .environment(\.colorScheme, .dark)
-}
+// #Preview {
+//     let connection = ConnectionSettings(host: "hive-preview", username: "icanders", identityFilePath: nil, password: nil)
+//     let monitor = SlurmMonitor(connection: connection)
+//     monitor.jobs = [
+//         SlurmJob(id: 42, name: "train_model", partition: "gpu", state: "RUNNING"),
+//         SlurmJob(id: 99, name: "data-prep", partition: "cpu", state: "PENDING")
+//     ]
+//     monitor.error = "This is a preview error message to test the banner."
+    
+//     return SlurmMenuView(monitor: monitor)
+//         .frame(width: 360)
+//         .padding()
+//         .background(.black)
+//         .environment(\.colorScheme, .dark)
+// }
