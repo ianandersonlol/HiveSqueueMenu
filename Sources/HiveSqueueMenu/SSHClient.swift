@@ -10,13 +10,20 @@ struct SSHClient {
     }
 
     func runCommand(_ command: String) throws -> Data {
+        print("[SSHClient] runCommand starting...")
+        print("[SSHClient] Connection: \(connection.username)@\(connection.host)")
+        print("[SSHClient] Identity file: \(connection.identityFilePath ?? "none")")
+        print("[SSHClient] Has password: \(connection.password != nil && !connection.password!.isEmpty)")
+
         guard FileManager.default.isExecutableFile(atPath: sshPath) else {
+            print("[SSHClient] ERROR: SSH not found at \(sshPath)")
             throw SSHClientError.sshUnavailable(sshPath)
         }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: sshPath)
         process.arguments = makeArguments(for: command)
+        print("[SSHClient] SSH args: \(process.arguments ?? [])")
 
         let stdout = Pipe()
         let stderr = Pipe()
@@ -38,12 +45,16 @@ struct SSHClient {
         }
 
         do {
+            print("[SSHClient] Launching SSH process...")
             try process.run()
+            print("[SSHClient] SSH process started, waiting for completion...")
         } catch {
+            print("[SSHClient] ERROR: Failed to launch SSH - \(error.localizedDescription)")
             throw SSHClientError.unableToLaunch(error.localizedDescription)
         }
 
         process.waitUntilExit()
+        print("[SSHClient] SSH process exited with status: \(process.terminationStatus)")
         if let askPassURL {
             try? FileManager.default.removeItem(at: askPassURL)
         }
@@ -52,14 +63,22 @@ struct SSHClient {
         if process.terminationStatus != 0 {
             let errData = stderr.fileHandleForReading.readDataToEndOfFile()
             let message = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            print("[SSHClient] ERROR: SSH failed - \(message ?? "no error message")")
             throw SSHClientError.commandFailed(message ?? "ssh exited with code \(process.terminationStatus)")
         }
 
+        print("[SSHClient] SSH completed successfully, got \(output.count) bytes")
         return output
     }
 
     private func makeArguments(for command: String) -> [String] {
         var arguments: [String] = []
+
+        // Disable strict host key checking and batch mode
+        arguments.append(contentsOf: ["-o", "StrictHostKeyChecking=no"])
+        arguments.append(contentsOf: ["-o", "BatchMode=yes"])
+        arguments.append(contentsOf: ["-o", "UserKnownHostsFile=/dev/null"])
+
         if let identity = connection.identityFilePath?.expandingTilde {
             arguments.append(contentsOf: ["-i", identity])
         }
@@ -72,6 +91,7 @@ struct SSHClient {
         }
 
         arguments.append(destination)
+        // Run command directly - squeue should have full path in AppConfig
         arguments.append(command)
         return arguments
     }

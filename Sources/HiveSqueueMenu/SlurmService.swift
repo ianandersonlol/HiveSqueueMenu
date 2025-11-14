@@ -15,9 +15,13 @@ struct SlurmService {
     }
 
     func fetchJobs() throws -> [SlurmJob] {
+        print("[SlurmService] fetchJobs starting...")
         let client = SSHClient(connection: connection)
+        print("[SlurmService] Running SSH command: \(remoteCommand)")
         let data = try client.runCommand(remoteCommand)
+        print("[SlurmService] SSH returned \(data.count) bytes")
         let response = try decoder.decode(SlurmResponse.self, from: data)
+        print("[SlurmService] Decoded \(response.jobs.count) jobs")
         return response.jobs.sorted(by: Self.jobSort)
     }
 
