@@ -20,6 +20,13 @@ struct SlurmService {
         print("[SlurmService] Running SSH command: \(remoteCommand)")
         let data = try client.runCommand(remoteCommand)
         print("[SlurmService] SSH returned \(data.count) bytes")
+
+        // Log first 500 chars of response to debug JSON issues
+        if let preview = String(data: data, encoding: .utf8) {
+            let previewText = String(preview.prefix(500))
+            print("[SlurmService] Response preview: \(previewText)")
+        }
+
         let response = try decoder.decode(SlurmResponse.self, from: data)
         print("[SlurmService] Decoded \(response.jobs.count) jobs")
         return response.jobs.sorted(by: Self.jobSort)

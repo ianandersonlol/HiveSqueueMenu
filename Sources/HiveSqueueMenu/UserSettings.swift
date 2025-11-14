@@ -36,7 +36,16 @@ final class UserSettings: ObservableObject {
 
     @Published var password: String {
         didSet {
-            guard !isLoadingPassword else { return }
+            guard !isLoadingPassword else {
+                print("[UserSettings] Skipping password save - loading from keychain")
+                return
+            }
+            // Only save if password actually changed from what's stored
+            if oldValue == password {
+                print("[UserSettings] Password unchanged, skipping save")
+                return
+            }
+            print("[UserSettings] Password changed (old length: \(oldValue.count), new length: \(password.count))")
             do {
                 if password.isEmpty {
                     try KeychainHelper.deletePassword(service: keychainService, account: host)
@@ -59,16 +68,25 @@ final class UserSettings: ObservableObject {
         let storedIdentity = defaults.string(forKey: Keys.identityFilePath)?.nonEmpty ?? ""
         let storedPassword = KeychainHelper.loadPassword(service: keychainService, account: storedHost) ?? ""
 
+        print("[UserSettings] Loaded from storage - host: \(storedHost), user: \(storedUsername), key: \(storedIdentity), hasPassword: \(!storedPassword.isEmpty)")
+
+        // Set loading flag BEFORE setting password to prevent didSet
+        isLoadingPassword = true
         host = storedHost
         username = storedUsername
         identityFilePath = storedIdentity
         password = storedPassword
-        connectionSettings = ConnectionSettings(
+        isLoadingPassword = false
+
+        let initialSettings = ConnectionSettings(
             host: storedHost,
             username: storedUsername,
             identityFilePath: storedIdentity.nonEmpty,
             password: storedPassword.nonEmpty
         )
+        print("[UserSettings] ConnectionSettings created - isConfigured: \(initialSettings.isConfigured)")
+        print("[UserSettings] Details - host: \(initialSettings.host), user: \(initialSettings.username), identityPath: \(initialSettings.identityFilePath ?? "nil"), hasPassword: \(initialSettings.password != nil)")
+        connectionSettings = initialSettings
     }
 
     private func reloadPasswordForCurrentHost() {

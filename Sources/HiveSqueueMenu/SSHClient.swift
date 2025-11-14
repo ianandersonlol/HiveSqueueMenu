@@ -74,10 +74,15 @@ struct SSHClient {
     private func makeArguments(for command: String) -> [String] {
         var arguments: [String] = []
 
-        // Disable strict host key checking and batch mode
+        // Disable strict host key checking to avoid interactive prompts
         arguments.append(contentsOf: ["-o", "StrictHostKeyChecking=no"])
-        arguments.append(contentsOf: ["-o", "BatchMode=yes"])
         arguments.append(contentsOf: ["-o", "UserKnownHostsFile=/dev/null"])
+
+        // Only use BatchMode if we don't have a password (for passphrase-less keys)
+        // If we have a password, it could be for key passphrase or server auth
+        if connection.password == nil || connection.password!.isEmpty {
+            arguments.append(contentsOf: ["-o", "BatchMode=yes"])
+        }
 
         if let identity = connection.identityFilePath?.expandingTilde {
             arguments.append(contentsOf: ["-i", identity])
