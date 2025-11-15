@@ -20,7 +20,7 @@ struct SlurmMenuView: View {
             preferencesButton
         }
         .padding(16)
-        .frame(width: 360)
+        .frame(width: 420)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .padding(8)
         .onReceive(refreshTicker) { date in
@@ -107,31 +107,39 @@ struct SlurmMenuView: View {
     }
 
     private var jobsSection: some View {
-        Group {
-            if !hasFetchedOnce {
-                Text("No data yet. Refresh to see your jobs.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 24)
-            } else if monitor.jobs.isEmpty {
-                Text("No active jobs")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 24)
-            } else {
-                ScrollView {
-                    VStack(spacing: 10) {
-                        ForEach(Array(monitor.jobs.prefix(AppConfig.maxVisibleJobs))) { job in
-                            JobRow(job: job)
-                        }
-                    }
-                    .padding(.vertical, 4)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Jobs")
+                    .font(.headline)
+                Spacer()
+                if hasFetchedOnce, let last = monitor.lastFetchDate {
+                    Text("Updated \(last, style: .relative)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .frame(maxHeight: 250)
+            }
+
+            if !hasFetchedOnce {
+                JobsPlaceholder(text: "No data yet. Refresh to see your jobs.")
+            } else if monitor.jobs.isEmpty {
+                JobsPlaceholder(text: "You have no running or queued jobs.")
+            } else {
+                let visibleJobs = Array(monitor.jobs.prefix(AppConfig.maxVisibleJobs))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    JobTableView(jobs: visibleJobs)
+                        .frame(minWidth: JobTableLayout.minimumWidth, alignment: .leading)
+                        .padding(.vertical, 2)
+                }
+                .frame(maxWidth: .infinity)
+                if monitor.jobs.count > visibleJobs.count {
+                    Text("Showing \(visibleJobs.count) of \(monitor.jobs.count) jobs")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -141,54 +149,148 @@ struct StatBubble: View {
     let count: Int
 
     var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(color.gradient)
-                .frame(width: 10, height: 10)
-            Text(label)
-                .font(.subheadline)
-            Spacer(minLength: 10)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label.uppercased())
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Text("\(count)")
-                .bold()
+                .font(.system(size: 24, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 12)
+        .padding(.horizontal, 14)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
-struct JobRow: View {
-    let job: SlurmJob
+struct JobsPlaceholder: View {
+    let text: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(job.name)
-                .font(.headline)
-                .lineLimit(1)
-            HStack(spacing: 8) {
-                Text("#\(job.id)")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                PartitionPill(text: job.partition)
-                Spacer()
-                StateBadge(state: job.displayState)
-            }
+        VStack(spacing: 8) {
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(12)
+        .padding(.vertical, 24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct JobTableView: View {
+    let jobs: [SlurmJob]
+    private var lastJobId: Int? { jobs.last?.id }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            JobTableHeader()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.white.opacity(0.04))
+            Divider()
+                .overlay(Color.white.opacity(0.08))
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(jobs) { job in
+                        JobTableRow(job: job)
+                        if job.id != lastJobId {
+                            Divider()
+                                .overlay(Color.white.opacity(0.05))
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
+        }
+        .frame(minWidth: JobTableLayout.minimumWidth, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
-struct PartitionPill: View {
-    let text: String
+private enum JobTableLayout {
+    static let idWidth: CGFloat = 70
+    static let partitionWidth: CGFloat = 85
+    static let elapsedWidth: CGFloat = 90
+    static let cpuWidth: CGFloat = 60
+    static let memoryWidth: CGFloat = 80
+    static let gpuWidth: CGFloat = 60
+    static let stateWidth: CGFloat = 95
+    static let nameMinWidth: CGFloat = 220
+    static let columnSpacing: CGFloat = 12
+    static let minimumWidth: CGFloat =
+        idWidth + partitionWidth + elapsedWidth + cpuWidth +
+        memoryWidth + gpuWidth + stateWidth + nameMinWidth +
+        columnSpacing * 7
+}
+
+struct JobTableHeader: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("ID")
+                .frame(width: JobTableLayout.idWidth, alignment: .leading)
+            Text("Name")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("Partition")
+                .frame(width: JobTableLayout.partitionWidth, alignment: .leading)
+            Text("Elapsed")
+                .frame(width: JobTableLayout.elapsedWidth, alignment: .trailing)
+            Text("CPU")
+                .frame(width: JobTableLayout.cpuWidth, alignment: .trailing)
+            Text("Memory")
+                .frame(width: JobTableLayout.memoryWidth, alignment: .leading)
+            Text("GPU")
+                .frame(width: JobTableLayout.gpuWidth, alignment: .trailing)
+            Text("State")
+                .frame(width: JobTableLayout.stateWidth, alignment: .trailing)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .textCase(.uppercase)
+    }
+}
+
+struct JobTableRow: View {
+    let job: SlurmJob
 
     var body: some View {
-        Text(text.uppercased())
-            .font(.caption2)
-            .fontWeight(.semibold)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(.ultraThinMaterial, in: Capsule())
+        HStack(spacing: 12) {
+            Text(job.formattedId)
+                .font(.system(.body, design: .monospaced))
+                .frame(width: JobTableLayout.idWidth, alignment: .leading)
+            Text(job.displayName)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(job.partitionDisplay)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(width: JobTableLayout.partitionWidth, alignment: .leading)
+            Text(job.formattedElapsedTime)
+                .font(.subheadline)
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+                .frame(width: JobTableLayout.elapsedWidth, alignment: .trailing)
+            Text(job.cpuSummary)
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.primary)
+                .frame(width: JobTableLayout.cpuWidth, alignment: .trailing)
+            Text(job.memorySummary)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .frame(width: JobTableLayout.memoryWidth, alignment: .leading)
+            Text(job.gpuSummary)
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.primary)
+                .frame(width: JobTableLayout.gpuWidth, alignment: .trailing)
+            StateBadge(state: job.displayState)
+                .frame(width: JobTableLayout.stateWidth, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 }
 
@@ -197,12 +299,12 @@ struct StateBadge: View {
 
     var body: some View {
         Text(state.label)
-            .font(.caption)
-            .fontWeight(.semibold)
+            .font(.caption.weight(.semibold))
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            .background(stateColor.opacity(0.15), in: Capsule())
+            .background(stateColor.opacity(0.15))
             .foregroundStyle(stateColor)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var stateColor: Color {
@@ -211,7 +313,17 @@ struct StateBadge: View {
             return .green
         case .pending:
             return .orange
-        case .other:
+        case .completing, .configuring:
+            return .blue
+        case .completed:
+            return .gray
+        case .failed:
+            return .red
+        case .cancelled:
+            return .purple
+        case .suspended:
+            return .teal
+        case .unknown:
             return .blue
         }
     }

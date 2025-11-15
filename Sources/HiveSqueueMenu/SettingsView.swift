@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var settings: UserSettings
-    @ObservedObject var monitor: SlurmMonitor
     @State private var availableKeys: [SSHKeyOption] = []
 
     var body: some View {
@@ -20,6 +19,9 @@ struct SettingsView: View {
                     ForEach(availableKeys) { option in
                         Text(option.name).tag(option.path)
                     }
+                    if let customKeyTag {
+                        Text("Custom: \(customKeyTag)").tag(customKeyTag)
+                    }
                 }
                 Button("Rescan Keys", action: reloadKeys)
                     .buttonStyle(.borderless)
@@ -36,14 +38,17 @@ struct SettingsView: View {
         .padding(20)
         .frame(minWidth: 400)
         .onAppear(perform: reloadKeys)
-        .onChange(of: settings.connectionSettings) { oldValue, newValue in
-            print("[SettingsView] Connection settings changed: \(newValue.username)@\(newValue.host), configured: \(newValue.isConfigured)")
-            monitor.updateConnection(newValue)
-        }
     }
 
     private func reloadKeys() {
         availableKeys = SSHKeyLibrary.availableKeys()
+    }
+
+    private var customKeyTag: String? {
+        let current = settings.identityFilePath
+        guard !current.isEmpty else { return nil }
+        let matchesKnownKey = availableKeys.contains { $0.path == current }
+        return matchesKnownKey ? nil : current
     }
 }
 

@@ -49,8 +49,16 @@ private extension JobState {
             return 0
         case .pending:
             return 1
-        case .other:
+        case .completing, .configuring:
             return 2
+        case .completed:
+            return 3
+        case .cancelled, .suspended:
+            return 4
+        case .failed:
+            return 5
+        case .unknown:
+            return 6
         }
     }
 }

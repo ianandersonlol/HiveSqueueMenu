@@ -136,27 +136,35 @@ final class SlurmMonitor: ObservableObject {
     }
 
     func updateConnection(_ newConnection: ConnectionSettings) {
+        host = newConnection.host.isEmpty ? "Not configured" : newConnection.host
+        let isNewConfiguration = newConnection != connection
         let wasConfigured = isConfigured
+        isConfigured = newConnection.isConfigured
+
+        guard isNewConfiguration else {
+            if !newConnection.isConfigured {
+                error = "Please configure your credentials in Preferences"
+            }
+            return
+        }
+
         if newConnection.isConfigured {
             print("[SlurmMonitor] updateConnection called: \(newConnection.username)@\(newConnection.host)")
         } else {
             print("[SlurmMonitor] updateConnection called with incomplete settings - not connecting")
         }
+
         connection = newConnection
-        isConfigured = newConnection.isConfigured
         latestFetchDate = nil
         fetchInFlight = false
-        host = newConnection.host.isEmpty ? "Not configured" : newConnection.host
         jobs = []
         lastFetchDate = nil
         error = newConnection.isConfigured ? nil : "Please configure your credentials in Preferences"
         isFetching = false
-        // Reset throttle and failure counter when connection settings change
         consecutiveFailures = 0
         isThrottled = false
         print("[SlurmMonitor] Throttle and failure counter reset")
 
-        // Auto-fetch when connection becomes valid
         if newConnection.isConfigured && !wasConfigured {
             print("[SlurmMonitor] Connection now valid - auto-triggering fetch")
             fetch(force: false)

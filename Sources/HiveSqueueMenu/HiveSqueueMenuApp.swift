@@ -3,12 +3,29 @@ import SwiftUI
 
 @main
 struct HiveSqueueMenuApp: App {
-    @StateObject private var settingsStore = UserSettings()
-    @StateObject private var monitor = SlurmMonitor()
+    @StateObject private var settingsStore: UserSettings
+    @StateObject private var monitor: SlurmMonitor
+
+    init() {
+        print("[App] Initializing HiveSqueueMenuApp...")
+        let settings = UserSettings()
+        _settingsStore = StateObject(wrappedValue: settings)
+        _monitor = StateObject(wrappedValue: SlurmMonitor(connection: settings.connectionSettings))
+        NSApplication.shared.setActivationPolicy(.accessory)
+        print("[App] Initialization complete")
+    }
 
     var body: some Scene {
         MenuBarExtra {
             SlurmMenuView(monitor: monitor)
+                .onAppear {
+                    print("[App] Menu appeared - applying initial connection settings")
+                    monitor.updateConnection(settingsStore.connectionSettings)
+                }
+                .onChange(of: settingsStore.connectionSettings) { oldValue, newValue in
+                    print("[App] Detected settings change - triggering monitor update (host: \(newValue.host))")
+                    monitor.updateConnection(newValue)
+                }
         } label: {
             Label {
                 Text(monitor.menuTitle)
@@ -20,13 +37,7 @@ struct HiveSqueueMenuApp: App {
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView(settings: settingsStore, monitor: monitor)
+            SettingsView(settings: settingsStore)
         }
-    }
-
-    init() {
-        print("[App] Initializing HiveSqueueMenuApp...")
-        NSApplication.shared.setActivationPolicy(.accessory)
-        print("[App] Initialization complete")
     }
 }

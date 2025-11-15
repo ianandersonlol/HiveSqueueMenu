@@ -36,13 +36,15 @@ final class UserSettings: ObservableObject {
 
     @Published var password: String {
         didSet {
-            guard !isLoadingPassword else {
-                print("[UserSettings] Skipping password save - loading from keychain")
+            if isLoadingPassword {
+                print("[UserSettings] Loaded password from keychain - updating settings only")
+                updateConnectionSettings()
                 return
             }
             // Only save if password actually changed from what's stored
             if oldValue == password {
                 print("[UserSettings] Password unchanged, skipping save")
+                updateConnectionSettings()
                 return
             }
             print("[UserSettings] Password changed (old length: \(oldValue.count), new length: \(password.count))")
