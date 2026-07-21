@@ -1,49 +1,104 @@
-# Slurm Menu Bar Monitor
+# HiveSqueueMenu
 
-A lightweight macOS menu bar app that tracks your personal Slurm jobs (e.g., UC Davis HIVE) and renders a glassy SwiftUI panel with job details.
+A small macOS menu-bar app for checking your personal Slurm queue over SSH. It shows queue counts in the menu bar and a compact SwiftUI panel with state, runtime, resources, nodes, and working-directory details for the first 20 jobs.
 
-## Features
-- Menu-bar-only SwiftUI app built with `MenuBarExtra`.
-- Periodically shells out to `ssh <host> "squeue --me --json"` and decodes the response into `SlurmJob` models.
-- Shows live counts for running (`R`) and pending (`Q`) jobs directly in the menu bar.
-- Dropdown panel uses Apple “liquid glass” aesthetics with SwiftUI materials, stat bubbles, and detailed job rows.
-- Error banner when SSH/JSON parsing fails; the menu bar label falls back to `Slurm: !`.
-- Built-in Preferences window to set host, username, password (stored in Keychain), and pick an SSH key from `~/.ssh`.
-- Manual refresh button with a 30-second cooldown so the cluster isn’t polled continuously in the background.
+## What it does
+
+- Connects with the system `/usr/bin/ssh` client using your SSH agent, a private key, or a Keychain-backed password.
+- Uses the normal OpenSSH `known_hosts` file with `StrictHostKeyChecking=accept-new`; changed host keys are rejected.
+- Performs a lightweight count query followed by detailed JSON only for visible jobs.
+- Handles plain and wrapped Slurm JSON values, job arrays, heterogeneous jobs, TRES resources, and common Slurm states.
+- Refreshes only when requested. A 30-second manual-refresh cooldown protects the scheduler; Retry explicitly bypasses it after an error.
+- Stores non-secret preferences in `UserDefaults` and passwords in the macOS Keychain with when-unlocked accessibility.
+
+The app does not submit, modify, or cancel jobs.
 
 ## Requirements
-- macOS 14+ with Swift 6.2 toolchain (Xcode 16 or newer).
-- Working SSH key-based access to your Slurm cluster and `/usr/bin/ssh` available locally.
 
-## Configuration / Preferences
-- Click **Preferences…** in the dropdown (or open the app’s Settings from the system menu) to configure:
-  - Cluster host (default: `hive.hpc.ucdavis.edu`).
-  - Username (enter `icanders` or whichever account you use on the cluster).
-  - SSH key path (auto-populated with the private keys found in `~/.ssh`; you can pick “None” or type a custom path).
-  - Password (optional). When filled in, it is stored securely in the macOS Keychain per host and supplied to `ssh` through the askpass flow, so you can operate without an SSH key. Leave it blank to rely on your SSH agent/key.
-`AppConfig.swift` centralizes values such as the SSH binary path, manual-refresh cooldown, and maximum visible jobs if you need to tweak those defaults in code.
+- macOS 14 or newer
+- Swift 6.2 or newer (Xcode 26 or a compatible Swift toolchain)
+- `/usr/bin/ssh`
+- A Slurm cluster that provides `squeue`
 
-## Refreshing & Rate Limits
-- The app does **not** auto-refresh; it loads data only when you click **Refresh** in the dropdown.
-- After every fetch, the refresh button is disabled for 30 seconds (and the monitor enforces the same limit internally) to avoid hammering the Slurm scheduler. The status text shows “Next refresh available in Ns” during this cooldown.
-- If you truly need more frequent updates, you can change `AppConfig.manualRefreshCooldown`, but be mindful of your cluster admins.
+## Configure and use
 
-## Building & Running
-1. Ensure your SSH credentials work: `ssh hive.hpc.ucdavis.edu "squeue --me --json"`. If you rely on a password, launch the app once, open Preferences, set your host/username/password, and the app will remember the credentials in Keychain.
-2. Build using SwiftPM or open in Xcode:
-   - `swift build` (or `swift run`) from the repo root.
-   - `open Package.swift` in Xcode for IDE-driven development/signing.
-3. Launch the resulting binary/app bundle; open the menu bar dropdown and hit **Refresh** whenever you want an updated job list (no Dock icon is shown).
+1. Build and open the app bundle:
 
-> **Note:** In the provided environment `swift build` cannot complete because SwiftPM cannot write to its global cache directories; run the build locally on your Mac for a successful compile/sign.
+   ```bash
+   Scripts/package-app.sh .build/HiveSqueueMenu.app
+   open .build/HiveSqueueMenu.app
+   ```
 
-## Architecture Notes
-- `UserSettings` persists host/username/key-path in `UserDefaults` and passwords in Keychain, exposing a `ConnectionSettings` snapshot that the monitor consumes.
-- `SlurmMonitor` encapsulates SSH execution (`Process` + `Pipe`), password askpass handling, JSON decoding, manual refresh throttling, and `@Published` state used by SwiftUI.
-- `SlurmMenuView` renders the liquid-glass UI with stat bubbles, scrollable job rows (capped at `maxVisibleJobs`), and an error banner.
-- `HiveSqueueMenuApp` hosts a single `MenuBarExtra`, immediately starts the monitor, and hides the Dock icon via `NSApplication.shared.setActivationPolicy(.accessory)`.
+2. Open **Preferences** from the menu panel.
+3. Enter the cluster host and username.
+4. Select a cluster profile:
+   - **Standard Slurm** performs no remote module setup.
+   - **UC Davis HIVE** initializes Environment Modules and loads the unversioned `slurm` module.
+5. Select an authentication mode:
+   - **SSH Agent** uses keys already available to your local agent/session.
+   - **SSH Key File** uses a detected or custom private-key path. An optional passphrase is supplied through askpass.
+   - **Password Only** requires a password stored in Keychain.
+6. Use **Test Connection**, then close Preferences and click **Refresh**.
 
-## Next Steps & Ideas
-1. Actions on job rows (e.g., `scancel`).
-2. Multi-cluster / multi-profile management.
-3. Rust core via FFI for the SSH/Slurm fetch to share code with other platforms.
+On the first connection to a host, OpenSSH records its host key in your normal `~/.ssh/known_hosts`. A later key change fails rather than being silently accepted.
+
+The remote command defaults to `squeue --me --json`. The Preferences override is intentionally powerful and executes as shell text on the configured remote account; only enter commands you trust.
+
+## Development
+
+Build the executable:
+
+```bash
+swift build
+```
+
+Run the test suite with a normal Xcode toolchain:
+
+```bash
+swift test
+```
+
+If standalone Command Line Tools cannot locate their bundled Swift Testing framework, use the documented local workaround:
+
+```bash
+.Codex/skills/swift-testing-command-line-tools/run_tests.sh
+```
+
+Create a release build and ad-hoc-signed local app bundle:
+
+```bash
+Scripts/package-app.sh .build/HiveSqueueMenu.app
+```
+
+For Developer ID signing, provide an installed signing identity:
+
+```bash
+CODE_SIGN_IDENTITY="Developer ID Application: Example" \
+  MARKETING_VERSION=1.0.0 \
+  Scripts/package-app.sh dist/HiveSqueueMenu.app
+```
+
+The script verifies the resulting signature. Notarization still requires your Apple Developer credentials and is deliberately left outside the repository.
+
+## Architecture
+
+- `SSHClient` owns OpenSSH arguments, host trust, askpass, concurrent pipe draining, and command timeouts.
+- `SlurmService` owns remote commands, failure classification, count/detail fetching, and JSON parsing.
+- `SlurmMonitor` owns main-actor UI state, cooldowns, failure throttling, and refresh cancellation/generation safety.
+- `ClusterProfile` owns cluster-specific remote bootstrap behavior.
+- `SlurmJob`, `SlurmDecoding`, `SlurmWireValues`, `SlurmJobPresentation`, and `JobState` separate domain identity, wire compatibility, and display formatting.
+- `UserSettings` and `KeychainHelper` persist preferences and credentials.
+- `MenuViews` and `SettingsView` contain the SwiftUI interface.
+
+GitHub Actions builds, tests, packages the app on `macos-26`, and creates a release archive for tags matching `v*`. The automated archive is ad-hoc signed unless a signing identity is explicitly provisioned.
+
+## Troubleshooting
+
+- **Host key verification failed:** inspect the host’s current fingerprint with your cluster administrator before changing `known_hosts`.
+- **Authentication failed:** confirm the selected mode and test the equivalent connection in Terminal.
+- **`squeue` not found:** choose the correct cluster profile or customize the remote command.
+- **No tests run under Command Line Tools:** use the repository test-workaround script above or select a licensed full Xcode installation.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
