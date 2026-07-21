@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v6
+      - name: Toolchain
+        run: swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+      - name: Package app
+        run: Scripts/package-app.sh .build/HiveSqueueMenu.app
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: HiveSqueueMenu
+          path: .build/HiveSqueueMenu.app
