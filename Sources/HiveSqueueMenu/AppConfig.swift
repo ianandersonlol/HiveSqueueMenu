@@ -1,6 +1,8 @@
 import Foundation
 
 enum AppConfig {
+    /// Stable defaults suite so settings survive across raw SwiftPM runs and temporary app bundles.
+    static let defaultsSuiteName = "HiveSqueueMenu"
     /// Default cluster host; replace with your actual login host.
     static let clusterHost = "hive.hpc.ucdavis.edu"
     /// Maximum number of jobs to render inside the panel for readability.
@@ -13,13 +15,8 @@ enum AppConfig {
     static let sshConnectTimeout: TimeInterval = 15
     /// Hard cap on total SSH command runtime before we kill it and surface an error.
     static let sshCommandTimeout: TimeInterval = 45
-    /// Optional shell script that initializes the environment modules system on remote hosts.
-    static let moduleInitScript: String? = "/etc/profile.d/modules.sh"
-    /// Optional Slurm module to load before running the remote command (set to nil if not needed).
-    static let slurmModule: String? = "slurm/25-05-0-1"
-    /// Optional path to the `modulecmd` binary for environments without the `module` shell function.
-    static let moduleCommandPath: String? = "/usr/share/Modules/bin/modulecmd"
     /// Command executed on the cluster to obtain job JSON.
-    /// Uses full path to avoid needing module system or bashrc
-    static let remoteCommand = "/cvmfs/hpc.ucdavis.edu/sw/spack/environments/core/view/generic/slurm/bin/squeue --me --json"
+    static let remoteCommand = "squeue --me --json"
+    /// Environment variable used by the fixed askpass helper. The password is never written into the helper source.
+    static let askPassSecretEnvironmentKey = "HIVESQUEUE_ASKPASS_SECRET"
 }

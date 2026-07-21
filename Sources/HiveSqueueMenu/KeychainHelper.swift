@@ -3,7 +3,6 @@ import Security
 
 enum KeychainHelper {
     static func savePassword(_ password: String, service: String, account: String) throws {
-        print("[Keychain] SAVING password for service: \(service), account: \(account)")
         guard let passwordData = password.data(using: .utf8) else {
             throw KeychainError.unableToEncode
         }
@@ -16,32 +15,27 @@ enum KeychainHelper {
 
         let attributes: [String: Any] = [
             kSecValueData as String: passwordData,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
         ]
 
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         switch status {
         case errSecSuccess:
-            print("[Keychain] Password updated successfully")
             return
         case errSecItemNotFound:
             var newItem = query
             newItem[kSecValueData as String] = passwordData
-            newItem[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            newItem[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
             let addStatus = SecItemAdd(newItem as CFDictionary, nil)
             if addStatus != errSecSuccess {
-                print("[Keychain] ERROR adding password: \(addStatus)")
                 throw KeychainError.osStatus(addStatus)
             }
-            print("[Keychain] Password added successfully")
         default:
-            print("[Keychain] ERROR updating password: \(status)")
             throw KeychainError.osStatus(status)
         }
     }
 
-    static func loadPassword(service: String, account: String) -> String? {
-        print("[Keychain] LOADING password for service: \(service), account: \(account)")
+    static func loadPassword(service: String, account: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -52,13 +46,16 @@ enum KeychainHelper {
 
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess,
-              let data = result as? Data,
-              let password = String(data: data, encoding: .utf8) else {
-            print("[Keychain] Password not found or error: \(status)")
+        if status == errSecItemNotFound {
             return nil
         }
-        print("[Keychain] Password loaded successfully (length: \(password.count))")
+        guard status == errSecSuccess else {
+            throw KeychainError.osStatus(status)
+        }
+        guard let data = result as? Data,
+              let password = String(data: data, encoding: .utf8) else {
+            throw KeychainError.unableToDecode
+        }
         return password
     }
 
@@ -78,12 +75,15 @@ enum KeychainHelper {
 
 enum KeychainError: Error, LocalizedError {
     case unableToEncode
+    case unableToDecode
     case osStatus(OSStatus)
 
     var errorDescription: String? {
         switch self {
         case .unableToEncode:
             return "Unable to encode password."
+        case .unableToDecode:
+            return "Unable to decode the stored password."
         case .osStatus(let status):
             if let message = SecCopyErrorMessageString(status, nil) as String? {
                 return "Keychain error (\(status)): \(message)"

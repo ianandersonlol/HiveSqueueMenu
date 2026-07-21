@@ -13,9 +13,9 @@ struct SSHKeyOption: Identifiable, Equatable {
 }
 
 enum SSHKeyLibrary {
-    static func availableKeys() -> [SSHKeyOption] {
+    static func availableKeys(in directory: URL? = nil) -> [SSHKeyOption] {
         let fileManager = FileManager.default
-        let sshDirectory = fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".ssh", isDirectory: true)
+        let sshDirectory = directory ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".ssh", isDirectory: true)
         guard let contents = try? fileManager.contentsOfDirectory(at: sshDirectory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else {
             return []
         }
@@ -30,9 +30,26 @@ enum SSHKeyLibrary {
             if ignoredNames.contains(name) || name.hasSuffix(".pub") {
                 return nil
             }
+            guard appearsToBePrivateKey(at: url) else {
+                return nil
+            }
             return SSHKeyOption(path: url.path)
         }
 
         return options.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private static func appearsToBePrivateKey(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let prefix = try? handle.read(upToCount: 256),
+              let text = String(data: prefix, encoding: .utf8) else {
+            return false
+        }
+        return text.contains("BEGIN OPENSSH PRIVATE KEY")
+            || text.contains("BEGIN RSA PRIVATE KEY")
+            || text.contains("BEGIN DSA PRIVATE KEY")
+            || text.contains("BEGIN EC PRIVATE KEY")
+            || text.contains("BEGIN PRIVATE KEY")
     }
 }

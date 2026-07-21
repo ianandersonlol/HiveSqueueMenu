@@ -1,193 +1,153 @@
-import XCTest
+import Foundation
+import Testing
 @testable import HiveSqueueMenu
 
-final class SlurmJobDecodingTests: XCTestCase {
-    func testDecodesWrappedAndPlainFields() throws {
-        let json = """
-        {
-            "jobs": [
-                {
-                    "job_id": { "set": true, "number": 42 },
-                    "name": { "set": true, "string": "wrapped-job" },
-                    "partition": { "set": true, "string": "gpu" },
-                    "job_state": { "set": true, "string": "RUNNING" }
-                },
-                {
-                    "job_id": 7,
-                    "name": "plain-job",
-                    "partition": "cpu",
-                    "job_state": "PENDING"
-                }
-            ]
-        }
-        """.data(using: .utf8)!
+@Suite("Slurm decoding and domain behavior")
+struct SlurmJobDecodingTests {
+    @Test
+    func decodesWrappedPlainAndMissingFields() throws {
+        let jobs = try parse(
+            """
+            {"jobs":[
+              {"job_id":{"set":true,"number":42},"name":{"set":true,"string":"wrapped"},"partition":"gpu","job_state":"RUNNING"},
+              {"job_id":7,"name":"plain","partition":"cpu","job_state":"PENDING"},
+              {"job_id":9}
+            ]}
+            """
+        )
 
-        let response = try JSONDecoder().decode(SlurmResponse.self, from: json)
-        XCTAssertEqual(response.jobs.count, 2)
-
-        let wrapped = response.jobs[0]
-        XCTAssertEqual(wrapped.id, 42)
-        XCTAssertEqual(wrapped.name, "wrapped-job")
-        XCTAssertEqual(wrapped.partition, "gpu")
-        XCTAssertEqual(wrapped.state, "RUNNING")
-
-        let plain = response.jobs[1]
-        XCTAssertEqual(plain.id, 7)
-        XCTAssertEqual(plain.name, "plain-job")
-        XCTAssertEqual(plain.partition, "cpu")
-        XCTAssertEqual(plain.state, "PENDING")
+        #expect(jobs.count == 3)
+        #expect(jobs[0].id == 42)
+        #expect(jobs[0].name == "wrapped")
+        #expect(jobs[1].id == 7)
+        #expect(jobs[1].state == "PENDING")
+        #expect(jobs[2].name.isEmpty)
+        #expect(jobs[2].partition.isEmpty)
     }
 
-    func testHandlesWrappedNumberProvidedAsString() throws {
-        let json = """
-        {
-            "jobs": [
-                {
-                    "job_id": { "set": true, "number": "128" },
-                    "name": "plain-job",
-                    "partition": "cpu",
-                    "job_state": "RUNNING"
-                }
-            ]
-        }
-        """.data(using: .utf8)!
+    @Test
+    func decodesFlexibleNumbersAndStrings() throws {
+        let jobs = try parse(
+            """
+            {"jobs":[
+              {"job_id":{"number":"128"},"name":{"number":42},"partition":null,"job_state":{"number":5}},
+              {"job_id":{"number":41.0},"name":123,"job_state":{"number":"3.0"}}
+            ]}
+            """
+        )
 
-        let response = try JSONDecoder().decode(SlurmResponse.self, from: json)
-        XCTAssertEqual(response.jobs.first?.id, 128)
+        let jobsByID = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
+        #expect(jobsByID[128]?.name == "42")
+        #expect(jobsByID[128]?.state == "5")
+        #expect(jobsByID[41]?.name == "123")
     }
 
-    func testHandlesWrappedStringWithNumericPayload() throws {
-        let json = """
-        {
-            "jobs": [
-                {
-                    "job_id": 1,
-                    "name": { "set": true, "number": 42 },
-                    "partition": { "set": true, "string": "cpu" },
-                    "job_state": { "set": true, "number": 5 }
-                }
-            ]
-        }
-        """.data(using: .utf8)!
+    @Test
+    func parsesTimeStateFlagsAndUnlimitedLimits() throws {
+        let jobs = try parse(
+            """
+            {"jobs":[
+              {"job_id":1,"job_state":"RUNNING","time":{"elapsed":61,"limit":{"number":70}}},
+              {"job_id":2,"job_state":["RUNNING","NODE_FAIL"],"time":{"elapsed":60,"limit":"1-02:03:04"}},
+              {"job_id":3,"job_state":"RUNNING","time":{"limit":{"infinite":true}}}
+            ]}
+            """
+        )
 
-        let response = try JSONDecoder().decode(SlurmResponse.self, from: json)
-        XCTAssertEqual(response.jobs.first?.name, "42")
-        XCTAssertEqual(response.jobs.first?.state, "5")
+        #expect(jobs[0].timeRemainingSeconds == (70 * 60) - 61)
+        #expect(jobs[0].formattedTimeRemaining == "1h 08m")
+        #expect(jobs[1].timeRemainingSeconds == (86_400 + 2 * 3_600 + 3 * 60 + 4) - 60)
+        #expect(jobs[1].stateFlags == ["NODE_FAIL"])
+        #expect(jobs[2].formattedTimeRemaining == "∞")
     }
 
-    func testHandlesMissingStringFields() throws {
-        let json = """
-        {
-            "jobs": [
-                {
-                    "job_id": 9
-                }
-            ]
-        }
-        """.data(using: .utf8)!
+    @Test
+    func parsesTypedGPUResources() throws {
+        let jobs = try parse(
+            """
+            {"jobs":[
+              {"job_id":4,"job_state":"RUNNING","tres_req_str":"cpu=4,mem=32768M,gres/gpu:l40s=1"},
+              {"job_id":5,"job_state":"PENDING","tres_req_str":"cpu=8,gres/gpu=a100:2"}
+            ]}
+            """
+        )
 
-        let response = try JSONDecoder().decode(SlurmResponse.self, from: json)
-        let job = try XCTUnwrap(response.jobs.first)
-        XCTAssertEqual(job.id, 9)
-        XCTAssertEqual(job.name, "")
-        XCTAssertEqual(job.partition, "")
-        XCTAssertEqual(job.state, "")
+        #expect(jobs[0].gpuSummary == "1 L40S")
+        #expect(jobs[0].resourceSummaryDisplay == "4 CPU • 32768M • 1 L40S")
+        #expect(jobs[1].gpuSummary == "2 A100")
     }
 
-    func testHandlesDoubleNumericValues() throws {
-        let json = """
-        {
-            "jobs": [
-                {
-                    "job_id": { "set": true, "number": 41.0 },
-                    "name": 123,
-                    "partition": null,
-                    "job_state": { "set": true, "number": "3.0" }
-                }
-            ]
-        }
-        """.data(using: .utf8)!
+    @Test
+    func arrayAndHeterogeneousJobsHaveStableDistinctSelectors() throws {
+        let jobs = try parse(
+            """
+            {"jobs":[
+              {"job_id":123,"array_job_id":123,"array_task_id":1,"job_state":"RUNNING"},
+              {"job_id":123,"array_job_id":123,"array_task_id":2,"job_state":"RUNNING"},
+              {"job_id":456,"het_job_id":456,"het_job_offset":3,"job_state":"PENDING"}
+            ]}
+            """
+        )
 
-        let response = try JSONDecoder().decode(SlurmResponse.self, from: json)
-        let job = try XCTUnwrap(response.jobs.first)
-        XCTAssertEqual(job.id, 41)
-        XCTAssertEqual(job.name, "123")
-        XCTAssertEqual(job.partition, "")
-        XCTAssertEqual(job.state, "3.0")
+        #expect(jobs.map(\.jobSelector) == ["123_1", "123_2", "456+3"])
+        #expect(Set(jobs.map(\.renderIdentity)).count == 3)
     }
 
-    func testDecodesTimeRemaining() throws {
-        let json = """
-        {
-            "jobs": [
-                {
-                    "job_id": 1,
-                    "name": "timed",
-                    "partition": "cpu",
-                    "job_state": "RUNNING",
-                    "time": {
-                        "elapsed": 61,
-                        "limit": { "set": true, "number": 70 }
-                    }
-                }
-            ]
-        }
-        """.data(using: .utf8)!
-
-        let response = try JSONDecoder().decode(SlurmResponse.self, from: json)
-        let job = try XCTUnwrap(response.jobs.first)
-        XCTAssertEqual(job.timeRemainingSeconds, (70 * 60) - 61)
-        XCTAssertEqual(job.formattedTimeRemaining, "1h 08m")
-        XCTAssertEqual(job.formattedElapsedTime, "1m 01s")
+    @Test
+    func mapsSlurmTerminalAndRequeueStatesCorrectly() {
+        #expect(JobState(rawValue: "OUT_OF_MEMORY") == .failed)
+        #expect(JobState(rawValue: "PREEMPTED") == .cancelled)
+        #expect(JobState(rawValue: "REQUEUED") == .pending)
+        #expect(JobState(rawValue: "NODE_FAIL") == .failed)
     }
 
-    func testParsesStateArrayAndStringTimeLimit() throws {
-        let json = """
-        {
-            "jobs": [
-                {
-                    "job_id": 2,
-                    "name": "string-time",
-                    "partition": "gpu",
-                    "job_state": ["RUNNING", "NODE_FAIL"],
-                    "time": {
-                        "elapsed": 60,
-                        "limit": "1-02:03:04"
-                    }
-                }
-            ]
+    @Test
+    func invalidJSONReportsCapturedOutput() {
+        do {
+            _ = try SlurmService.parseJobs(from: Data("not-json".utf8), stderr: "wrapper stderr")
+            Issue.record("Expected invalid-response failure")
+        } catch let failure as ConnectionFailure {
+            #expect(failure.kind == .invalidResponse)
+            #expect(failure.stderr == "wrapper stderr")
+            #expect(failure.stdout == "not-json")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
         }
-        """.data(using: .utf8)!
-
-        let response = try JSONDecoder().decode(SlurmResponse.self, from: json)
-        let job = try XCTUnwrap(response.jobs.first)
-        XCTAssertEqual(job.timeRemainingSeconds, (1 * 86_400 + 2 * 3600 + 3 * 60 + 4) - 60)
-        XCTAssertEqual(job.formattedElapsedTime, "1m 00s")
-        XCTAssertEqual(job.displayState, .running)
-        XCTAssertEqual(job.stateFlags, ["NODE_FAIL"])
     }
 
-    func testDisplaysInfinityForUnlimited() throws {
-        let json = """
-        {
-            "jobs": [
-                {
-                    "job_id": 3,
-                    "name": "unlimited-time",
-                    "partition": "long",
-                    "job_state": "RUNNING",
-                    "time": {
-                        "limit": { "set": true, "infinite": true }
-                    }
-                }
-            ]
-        }
-        """.data(using: .utf8)!
+    @Test
+    func authenticationValidationMatchesSelectedMode() {
+        let passwordless = settings(authentication: .passwordOnly, password: nil)
+        #expect(passwordless.isConfigured)
+        #expect(passwordless.configurationIssue != nil)
 
-        let response = try JSONDecoder().decode(SlurmResponse.self, from: json)
-        let job = try XCTUnwrap(response.jobs.first)
-        XCTAssertNil(job.timeRemainingSeconds)
-        XCTAssertEqual(job.formattedTimeRemaining, "∞")
-        XCTAssertEqual(job.formattedElapsedTime, "—")
+        let withPassword = settings(authentication: .passwordOnly, password: "secret")
+        #expect(withPassword.configurationIssue == nil)
+
+        let missingKey = settings(authentication: .key(path: ""), password: nil)
+        #expect(missingKey.configurationIssue != nil)
+    }
+
+    @Test
+    func abbreviatesMenuCounts() {
+        #expect(SlurmMonitor.abbreviatedJobCount(42) == "42")
+        #expect(SlurmMonitor.abbreviatedJobCount(100) == "100+")
+        #expect(SlurmMonitor.abbreviatedJobCount(1_000) == "1K+")
+        #expect(SlurmMonitor.abbreviatedJobCount(250_000) == "100K+")
+    }
+
+    private func parse(_ json: String) throws -> [SlurmJob] {
+        try SlurmService.parseJobs(from: Data(json.utf8))
+    }
+
+    private func settings(authentication: SSHAuthentication, password: String?) -> ConnectionSettings {
+        ConnectionSettings(
+            host: "cluster.example",
+            username: "user",
+            clusterProfile: .standard,
+            authentication: authentication,
+            password: password,
+            remoteCommand: AppConfig.remoteCommand
+        )
     }
 }

@@ -5,22 +5,23 @@ struct SlurmMenuView: View {
     @ObservedObject var monitor: SlurmMonitor
     @State private var now = Date()
     private let refreshTicker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    private let panelWidth: CGFloat = 700
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            refreshControls
-            if let error = monitor.error {
-                ErrorBanner(message: error, retryAction: { monitor.fetch(force: true) })
+        VStack(alignment: .leading, spacing: 8) {
+            topBar
+            if let issue = monitor.issue {
+                ErrorBanner(
+                    title: issue.title,
+                    message: issue.message,
+                    retryAction: { monitor.fetch(force: true) }
+                )
             }
-            statsSection
-            Divider().overlay(Color.white.opacity(0.1))
             jobsSection
-            Divider().overlay(Color.white.opacity(0.1))
-            preferencesButton
+            footerBar
         }
         .padding(16)
-        .frame(width: 420)
+        .frame(width: panelWidth)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .padding(8)
         .onReceive(refreshTicker) { date in
@@ -28,32 +29,27 @@ struct SlurmMenuView: View {
         }
     }
 
-    private var hasFetchedOnce: Bool {
-        monitor.lastFetchDate != nil
+    private var hasSuccessfulFetch: Bool {
+        monitor.lastSuccessfulFetchDate != nil
     }
 
     @Environment(\.openSettings) private var openSettings
 
-    private var preferencesButton: some View {
-        Button("Preferences…") {
-            openSettings()
-        }
-        .frame(maxWidth: .infinity, alignment: .center)
-    }
+    private var topBar: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Slurm Queue")
+                    .font(.title2.weight(.bold))
+                    .bold()
+                Text(monitor.host)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                refreshStatusText
+                    .padding(.top, 2)
+            }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Slurm Status")
-                .font(.title3)
-                .bold()
-            Text(monitor.host)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
+            Spacer(minLength: 8)
 
-    private var refreshControls: some View {
-        VStack(alignment: .leading, spacing: 6) {
             Button {
                 monitor.fetch()
             } label: {
@@ -65,8 +61,6 @@ struct SlurmMenuView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(refreshDisabled)
-
-            refreshStatusText
         }
     }
 
@@ -81,59 +75,61 @@ struct SlurmMenuView: View {
                 Text("Fetching latest job list…")
             } else if let remaining = monitor.timeUntilNextAllowedRefresh(from: now) {
                 Text("Next refresh available in \(Int(ceil(remaining)))s")
-            } else if let last = monitor.lastFetchDate {
-                Text("Last refreshed \(last, style: .relative)")
+            } else if let lastSuccess = monitor.lastSuccessfulFetchDate {
+                Text("Last successful refresh \(lastSuccess, style: .relative)")
+            } else if let lastAttempt = monitor.lastFetchDate {
+                Text("Last refresh attempt \(lastAttempt, style: .relative)")
             } else {
                 Text("Press refresh to load jobs.")
             }
         }
-        .font(.caption)
+        .font(.footnote.weight(.medium))
         .foregroundStyle(.secondary)
-    }
-
-    private var statsSection: some View {
-        HStack(spacing: 12) {
-            StatBubble(
-                color: .green,
-                label: "Running",
-                count: monitor.runningJobs.count
-            )
-            StatBubble(
-                color: .orange,
-                label: "Pending",
-                count: monitor.pendingJobs.count
-            )
-        }
     }
 
     private var jobsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Jobs")
-                    .font(.headline)
+                Text("Queue")
+                    .font(.title3.weight(.semibold))
                 Spacer()
-                if hasFetchedOnce, let last = monitor.lastFetchDate {
+                if hasSuccessfulFetch, let last = monitor.lastSuccessfulFetchDate {
                     Text("Updated \(last, style: .relative)")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            if !hasFetchedOnce {
-                JobsPlaceholder(text: "No data yet. Refresh to see your jobs.")
+            if !hasSuccessfulFetch {
+                JobsPlaceholder(text: initialPlaceholderText)
+            } else if monitor.totalJobCount > 0 && monitor.jobs.isEmpty {
+                JobsPlaceholder(text: "Queue counts loaded, but detailed rows were not available. Refresh again to retry the detailed view.")
             } else if monitor.jobs.isEmpty {
                 JobsPlaceholder(text: "You have no running or queued jobs.")
             } else {
                 let visibleJobs = Array(monitor.jobs.prefix(AppConfig.maxVisibleJobs))
-                ScrollView(.horizontal, showsIndicators: false) {
-                    JobTableView(jobs: visibleJobs)
-                        .frame(minWidth: JobTableLayout.minimumWidth, alignment: .leading)
-                        .padding(.vertical, 2)
+                Group {
+                    if visibleJobs.count <= 4 {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(visibleJobs, id: \.renderIdentity) { job in
+                                JobCardView(job: job)
+                            }
+                        }
+                    } else {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 8) {
+                                ForEach(visibleJobs, id: \.renderIdentity) { job in
+                                    JobCardView(job: job)
+                                }
+                            }
+                            .padding(.vertical, 1)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: 420)
+                    }
                 }
-                .frame(maxWidth: .infinity)
-                if monitor.jobs.count > visibleJobs.count {
-                    Text("Showing \(visibleJobs.count) of \(monitor.jobs.count) jobs")
-                        .font(.caption2)
+                if monitor.totalJobCount > visibleJobs.count {
+                    Text("Showing \(visibleJobs.count) of \(monitor.totalJobCount) jobs")
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)
                 }
@@ -141,26 +137,166 @@ struct SlurmMenuView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    private var initialPlaceholderText: String {
+        if monitor.issue?.kind == .notConfigured {
+            return "Configure your host, username, auth mode, and command in Preferences, then refresh."
+        }
+        if monitor.issue != nil {
+            return "No successful data load yet. Fix the error above, then refresh again."
+        }
+        return "No data yet. Refresh to see your jobs."
+    }
+
+    private var footerBar: some View {
+        HStack(spacing: 10) {
+            QueueCountPill(color: .green, label: "Running", count: monitor.runningJobCount)
+            QueueCountPill(color: .orange, label: "Pending", count: monitor.pendingJobCount)
+            if monitor.otherJobCount > 0 {
+                QueueCountPill(color: .blue, label: "Other", count: monitor.otherJobCount)
+            }
+            Spacer()
+            Button {
+                openSettings()
+            } label: {
+                Label("Preferences", systemImage: "gearshape")
+            }
+            .font(.footnote.weight(.semibold))
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.top, 2)
+    }
 }
 
-struct StatBubble: View {
+struct MenuStatusIcon: View {
+    let runningCount: Int
+    let pendingCount: Int
+    let otherCount: Int
+    let isFetching: Bool
+    let issue: MonitorIssue?
+
+    private let iconSize: CGFloat = 16
+    private let badgeOffset: CGFloat = 3
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(backgroundTint)
+                    .frame(width: iconSize, height: iconSize)
+
+                MenuBarHiveArt()
+                    .frame(width: iconSize, height: iconSize)
+
+                if isFetching {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color.blue, lineWidth: 1.7)
+                        .frame(width: iconSize, height: iconSize)
+                        .rotationEffect(.degrees(isFetching ? 360 : 0))
+                        .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: isFetching)
+                }
+            }
+
+            if issue != nil {
+                Image(systemName: issue?.kind == .notConfigured ? "slider.horizontal.3" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(3)
+                    .background(Color.red.opacity(0.95), in: Circle())
+                    .offset(x: badgeOffset, y: -badgeOffset)
+            } else if totalJobs > 0, !isFetching {
+                Text(totalJobs > 9 ? "9+" : "\(totalJobs)")
+                    .font(.system(size: 7, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(badgeTint, in: Capsule())
+                    .offset(x: badgeOffset, y: -badgeOffset)
+            }
+        }
+        .frame(width: iconSize, height: iconSize)
+    }
+
+    private var totalJobs: Int {
+        runningCount + pendingCount + otherCount
+    }
+
+    private var backgroundTint: Color {
+        if issue != nil {
+            return Color.orange.opacity(0.22)
+        }
+        if isFetching {
+            return Color.blue.opacity(0.16)
+        }
+        if runningCount > 0 {
+            return Color.green.opacity(0.12)
+        }
+        if pendingCount > 0 {
+            return Color.orange.opacity(0.12)
+        }
+        if otherCount > 0 {
+            return Color.blue.opacity(0.12)
+        }
+        return Color.gray.opacity(0.08)
+    }
+
+    private var badgeTint: Color {
+        if runningCount > 0 && pendingCount > 0 {
+            return Color.orange.opacity(0.95)
+        }
+        if runningCount > 0 {
+            return Color.green.opacity(0.92)
+        }
+        if pendingCount > 0 {
+            return Color.orange.opacity(0.92)
+        }
+        return Color.blue.opacity(0.92)
+    }
+}
+
+private struct MenuBarHiveArt: View {
+    var body: some View {
+        ZStack {
+            Text("H")
+                .font(.system(size: 10, weight: .black, design: .rounded))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.99, green: 0.76, blue: 0.14),
+                            Color(red: 0.95, green: 0.64, blue: 0.08)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .offset(x: -1, y: 0.2)
+
+            Image(systemName: "hexagon.fill")
+                .font(.system(size: 5.5, weight: .bold))
+                .foregroundStyle(Color(red: 0.06, green: 0.22, blue: 0.43))
+                .offset(x: 4.5, y: 3.8)
+        }
+    }
+}
+
+struct QueueCountPill: View {
     let color: Color
     let label: String
     let count: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label.uppercased())
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        HStack(spacing: 6) {
             Text("\(count)")
-                .font(.system(size: 24, weight: .bold, design: .rounded))
+                .font(.system(.footnote, design: .rounded).weight(.bold))
                 .foregroundStyle(color)
+            Text(label)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 12)
-        .padding(.horizontal, 14)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(.thinMaterial, in: Capsule())
     }
 }
 
@@ -170,127 +306,75 @@ struct JobsPlaceholder: View {
     var body: some View {
         VStack(spacing: 8) {
             Text(text)
-                .font(.subheadline)
+                .font(.body.weight(.medium))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, 24)
+        .padding(.vertical, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-struct JobTableView: View {
-    let jobs: [SlurmJob]
-    private var lastJobId: Int? { jobs.last?.id }
+struct JobCardView: View {
+    let job: SlurmJob
 
     var body: some View {
-        VStack(spacing: 0) {
-            JobTableHeader()
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.white.opacity(0.04))
-            Divider()
-                .overlay(Color.white.opacity(0.08))
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(jobs) { job in
-                        JobTableRow(job: job)
-                        if job.id != lastJobId {
-                            Divider()
-                                .overlay(Color.white.opacity(0.05))
-                        }
-                    }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(job.displayName)
+                        .font(.title3.weight(.bold))
+                        .lineLimit(1)
+                    Text(job.compactMetadataLine)
+                        .font(.footnote.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(job.runtimeBadgeDisplay)
+                        .font(.system(.footnote, design: .rounded).weight(.bold))
+                        .foregroundStyle(.secondary)
+                    StateBadge(state: job.displayState)
                 }
             }
-            .frame(maxHeight: 260)
+
+            JobInlineFactRow(icon: "cpu", text: job.resourceLineDisplay)
+            JobInlineFactRow(icon: "folder", text: job.pathLineDisplay)
+
+            if let reason = job.stateReasonDisplay {
+                JobInlineFactRow(icon: "info.circle", text: reason)
+            }
         }
-        .frame(minWidth: JobTableLayout.minimumWidth, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
-private enum JobTableLayout {
-    static let idWidth: CGFloat = 70
-    static let partitionWidth: CGFloat = 85
-    static let elapsedWidth: CGFloat = 90
-    static let cpuWidth: CGFloat = 60
-    static let memoryWidth: CGFloat = 80
-    static let gpuWidth: CGFloat = 60
-    static let stateWidth: CGFloat = 95
-    static let nameMinWidth: CGFloat = 220
-    static let columnSpacing: CGFloat = 12
-    static let minimumWidth: CGFloat =
-        idWidth + partitionWidth + elapsedWidth + cpuWidth +
-        memoryWidth + gpuWidth + stateWidth + nameMinWidth +
-        columnSpacing * 7
-}
-
-struct JobTableHeader: View {
-    var body: some View {
-        HStack(spacing: 12) {
-            Text("ID")
-                .frame(width: JobTableLayout.idWidth, alignment: .leading)
-            Text("Name")
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Text("Partition")
-                .frame(width: JobTableLayout.partitionWidth, alignment: .leading)
-            Text("Elapsed")
-                .frame(width: JobTableLayout.elapsedWidth, alignment: .trailing)
-            Text("CPU")
-                .frame(width: JobTableLayout.cpuWidth, alignment: .trailing)
-            Text("Memory")
-                .frame(width: JobTableLayout.memoryWidth, alignment: .leading)
-            Text("GPU")
-                .frame(width: JobTableLayout.gpuWidth, alignment: .trailing)
-            Text("State")
-                .frame(width: JobTableLayout.stateWidth, alignment: .trailing)
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .textCase(.uppercase)
-    }
-}
-
-struct JobTableRow: View {
-    let job: SlurmJob
+struct JobInlineFactRow: View {
+    let icon: String
+    let text: String
 
     var body: some View {
-        HStack(spacing: 12) {
-            Text(job.formattedId)
-                .font(.system(.body, design: .monospaced))
-                .frame(width: JobTableLayout.idWidth, alignment: .leading)
-            Text(job.displayName)
-                .font(.body.weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Text(job.partitionDisplay)
-                .font(.subheadline)
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption)
                 .foregroundStyle(.secondary)
-                .frame(width: JobTableLayout.partitionWidth, alignment: .leading)
-            Text(job.formattedElapsedTime)
-                .font(.subheadline)
-                .monospacedDigit()
-                .foregroundStyle(.primary)
-                .frame(width: JobTableLayout.elapsedWidth, alignment: .trailing)
-            Text(job.cpuSummary)
-                .font(.subheadline.monospacedDigit())
-                .foregroundStyle(.primary)
-                .frame(width: JobTableLayout.cpuWidth, alignment: .trailing)
-            Text(job.memorySummary)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-                .frame(width: JobTableLayout.memoryWidth, alignment: .leading)
-            Text(job.gpuSummary)
-                .font(.subheadline.monospacedDigit())
-                .foregroundStyle(.primary)
-                .frame(width: JobTableLayout.gpuWidth, alignment: .trailing)
-            StateBadge(state: job.displayState)
-                .frame(width: JobTableLayout.stateWidth, alignment: .trailing)
+                .frame(width: 12)
+                .padding(.top, 1)
+
+            Text(text)
+                .font(.footnote.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(icon == "folder" ? .middle : .tail)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
     }
 }
 
@@ -299,7 +383,7 @@ struct StateBadge: View {
 
     var body: some View {
         Text(state.label)
-            .font(.caption.weight(.semibold))
+            .font(.footnote.weight(.bold))
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .background(stateColor.opacity(0.15))
@@ -330,6 +414,7 @@ struct StateBadge: View {
 }
 
 struct ErrorBanner: View {
+    let title: String
     let message: String
     var retryAction: (() -> Void)?
 
@@ -339,13 +424,16 @@ struct ErrorBanner: View {
                 .foregroundStyle(.yellow)
             
             VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(.body.weight(.bold))
+                    .foregroundStyle(.primary)
                 Text(message)
-                    .font(.footnote)
+                    .font(.body)
                     .foregroundStyle(.primary)
                 
                 if let retryAction {
                     Button("Retry", action: retryAction)
-                        .font(.footnote)
+                        .font(.body.weight(.semibold))
                 }
             }
         }
@@ -353,19 +441,3 @@ struct ErrorBanner: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
-
-// #Preview {
-//     let connection = ConnectionSettings(host: "hive-preview", username: "icanders", identityFilePath: nil, password: nil)
-//     let monitor = SlurmMonitor(connection: connection)
-//     monitor.jobs = [
-//         SlurmJob(id: 42, name: "train_model", partition: "gpu", state: "RUNNING"),
-//         SlurmJob(id: 99, name: "data-prep", partition: "cpu", state: "PENDING")
-//     ]
-//     monitor.error = "This is a preview error message to test the banner."
-    
-//     return SlurmMenuView(monitor: monitor)
-//         .frame(width: 360)
-//         .padding()
-//         .background(.black)
-//         .environment(\.colorScheme, .dark)
-// }

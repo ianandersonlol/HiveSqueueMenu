@@ -1,15 +1,51 @@
-import Combine
 import Foundation
 import SwiftUI
 
+struct MonitorIssue: Equatable {
+    enum Kind: Equatable {
+        case notConfigured
+        case sshAuthenticationFailed
+        case remoteCommandMissing
+        case invalidResponse
+        case transportFailure
+        case throttled
+    }
+
+    let kind: Kind
+    let message: String
+
+    var title: String {
+        switch kind {
+        case .notConfigured:
+            return "Setup Required"
+        case .sshAuthenticationFailed:
+            return "SSH Authentication Failed"
+        case .remoteCommandMissing:
+            return "Remote Command Failed"
+        case .invalidResponse:
+            return "Unexpected Slurm Output"
+        case .transportFailure:
+            return "Connection Failed"
+        case .throttled:
+            return "Refresh Paused"
+        }
+    }
+}
+
 @MainActor
 final class SlurmMonitor: ObservableObject {
+    typealias SnapshotFetcher = @Sendable (ConnectionSettings, SSHCancellationToken) async throws -> SlurmQueueSnapshot
+
     @Published var jobs: [SlurmJob] = []
-    @Published var error: String?
+    @Published var issue: MonitorIssue?
     @Published private(set) var host: String
     @Published private(set) var isFetching: Bool = false
     @Published private(set) var lastFetchDate: Date?
+    @Published private(set) var lastSuccessfulFetchDate: Date?
     @Published private(set) var isConfigured: Bool = false
+    @Published private(set) var runningJobCount: Int = 0
+    @Published private(set) var pendingJobCount: Int = 0
+    @Published private(set) var otherJobCount: Int = 0
 
     var runningJobs: [SlurmJob] {
         jobs.filter { $0.displayState == .running }
@@ -19,161 +55,221 @@ final class SlurmMonitor: ObservableObject {
         jobs.filter { $0.displayState == .pending }
     }
 
+    var totalJobCount: Int {
+        runningJobCount + pendingJobCount + otherJobCount
+    }
+
     var menuTitle: String {
-        if error != nil {
-            return "Slurm: !"
+        let prefix = "H"
+
+        if isFetching && lastSuccessfulFetchDate == nil {
+            return "\(prefix) …"
         }
 
-        let runningCount = runningJobs.count
-        let pendingCount = pendingJobs.count
-        return "Slurm: \(runningCount)R \(pendingCount)Q"
+        if let issue {
+            return issue.kind == .notConfigured ? "\(prefix) --" : "\(prefix) !"
+        }
+
+        return "\(prefix) \(Self.abbreviatedJobCount(totalJobCount))"
     }
 
     private var connection: ConnectionSettings
-    private let sshPath: String
-    private let remoteCommand: String
     private let refreshCooldown: TimeInterval
     private var fetchInFlight = false
     private var latestFetchDate: Date?
     private var consecutiveFailures = 0
     private let maxConsecutiveFailures = 5
     private var isThrottled = false
+    private let snapshotFetcher: SnapshotFetcher
+    private var fetchTask: Task<Void, Never>?
+    private var fetchCancellationToken: SSHCancellationToken?
+    private var fetchGeneration: UInt = 0
 
     init(
         connection: ConnectionSettings = .empty,
-        sshPath: String = AppConfig.sshPath,
-        remoteCommand: String = AppConfig.remoteCommand,
-        refreshCooldown: TimeInterval = AppConfig.manualRefreshCooldown
+        refreshCooldown: TimeInterval = AppConfig.manualRefreshCooldown,
+        snapshotFetcher: SnapshotFetcher? = nil
     ) {
         self.connection = connection
-        self.sshPath = sshPath
-        self.remoteCommand = remoteCommand
         self.refreshCooldown = refreshCooldown
+        self.snapshotFetcher = snapshotFetcher ?? { connection, cancellationToken in
+            try await Task.detached(priority: .utility) {
+                try SlurmService(
+                    connection: connection,
+                    cancellationToken: cancellationToken
+                ).fetchSnapshot()
+            }.value
+        }
         self.host = connection.host.isEmpty ? "Not configured" : connection.host
         self.isConfigured = connection.isConfigured
-        if connection.isConfigured {
-            print("[SlurmMonitor] Initialized with connection: \(connection.username)@\(connection.host)")
-        } else {
-            print("[SlurmMonitor] Initialized without valid connection - waiting for user configuration")
+        self.issue = connection.configurationIssue.map {
+            MonitorIssue(kind: .notConfigured, message: $0)
         }
     }
 
     func fetch(force: Bool = false) {
-        print("[SlurmMonitor] fetch called - force: \(force), fetchInFlight: \(fetchInFlight), consecutiveFailures: \(consecutiveFailures), throttled: \(isThrottled)")
-        Task {
-            if !connection.isConfigured {
-                print("[SlurmMonitor] Connection not configured, skipping fetch")
-                error = "Please configure your credentials in Preferences"
+        if let configurationIssue = connection.configurationIssue {
+            issue = MonitorIssue(kind: .notConfigured, message: configurationIssue)
+            return
+        }
+
+        if isThrottled {
+            if force {
+                isThrottled = false
+                consecutiveFailures = 0
+            } else {
+                issue = MonitorIssue(
+                    kind: .throttled,
+                    message: "Refresh is paused after repeated failures. Use Retry after fixing settings, or test the connection in Preferences."
+                )
                 return
             }
+        }
 
-            if isThrottled {
-                print("[SlurmMonitor] THROTTLED - Too many consecutive failures (\(consecutiveFailures)). Please check your credentials and try again later.")
-                error = "Connection throttled after \(consecutiveFailures) failures. Please verify your credentials in Preferences and wait before retrying."
-                return
-            }
+        if fetchInFlight {
+            return
+        }
 
-            if fetchInFlight {
-                print("[SlurmMonitor] Fetch already in flight, skipping")
-                return
-            }
-
+        if !force {
             let now = Date()
-            // ALWAYS enforce minimum cooldown, even with force=true (anti-spam protection)
             if let last = latestFetchDate {
-                let minCooldown: TimeInterval = force ? 5.0 : refreshCooldown
                 let elapsed = now.timeIntervalSince(last)
-                if elapsed < minCooldown {
-                    let remaining = minCooldown - elapsed
-                    print("[SlurmMonitor] Anti-spam cooldown active, \(remaining)s remaining (force=\(force))")
+                if elapsed < refreshCooldown {
                     return
                 }
             }
+        }
 
-            fetchInFlight = true
-            isFetching = true
-            print("[SlurmMonitor] Starting fetch - connection: \(connection.username)@\(connection.host)")
+        fetchGeneration &+= 1
+        let generation = fetchGeneration
+        let connectionAtStart = connection
+        let cancellationToken = SSHCancellationToken()
+        fetchCancellationToken = cancellationToken
+        fetchInFlight = true
+        isFetching = true
 
+        fetchTask = Task { [weak self] in
+            guard let self else { return }
             do {
-                let service = SlurmService(connection: connection)
-                print("[SlurmMonitor] Created SlurmService, starting detached task...")
-                // Run blocking SSH operation on background thread
-                let jobs = try await Task.detached(priority: .utility) {
-                    print("[SlurmMonitor] Inside detached task, calling fetchJobs()...")
-                    let result = try service.fetchJobs()
-                    print("[SlurmMonitor] fetchJobs() returned \(result.count) jobs")
-                    return result
-                }.value
-                print("[SlurmMonitor] Detached task completed successfully")
+                let snapshot = try await snapshotFetcher(connectionAtStart, cancellationToken)
+                guard !Task.isCancelled, generation == fetchGeneration else { return }
+
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    self.jobs = jobs
+                    self.jobs = snapshot.jobs
                 }
-                self.error = nil
-                // Reset failure counter on success
+                runningJobCount = snapshot.runningCount
+                pendingJobCount = snapshot.pendingCount
+                otherJobCount = snapshot.otherCount
+                issue = nil
                 consecutiveFailures = 0
-                print("[SlurmMonitor] Updated UI with jobs - failure counter reset")
             } catch {
+                guard !Task.isCancelled, generation == fetchGeneration else { return }
                 consecutiveFailures += 1
-                let errorMsg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                print("[SlurmMonitor] Fetch failed (\(consecutiveFailures)/\(maxConsecutiveFailures)): \(errorMsg)")
+                issue = monitorIssue(for: error)
 
                 if consecutiveFailures >= maxConsecutiveFailures {
                     isThrottled = true
-                    self.error = "Connection failed \(consecutiveFailures) times. Automatic retries disabled. Please check your credentials and manually retry."
-                    print("[SlurmMonitor] THROTTLE ACTIVATED - Too many failures")
-                } else {
-                    self.error = errorMsg + " (Attempt \(consecutiveFailures)/\(maxConsecutiveFailures))"
+                    issue = MonitorIssue(
+                        kind: .throttled,
+                        message: "Refresh is paused after \(consecutiveFailures) failures. Fix the connection settings, then use Retry or Test Connection."
+                    )
                 }
             }
 
             let finished = Date()
             latestFetchDate = finished
             lastFetchDate = finished
+            if issue == nil {
+                lastSuccessfulFetchDate = finished
+            }
             isFetching = false
             fetchInFlight = false
-            print("[SlurmMonitor] Fetch complete")
+            fetchTask = nil
+            fetchCancellationToken = nil
         }
     }
 
     func updateConnection(_ newConnection: ConnectionSettings) {
         host = newConnection.host.isEmpty ? "Not configured" : newConnection.host
         let isNewConfiguration = newConnection != connection
-        let wasConfigured = isConfigured
         isConfigured = newConnection.isConfigured
 
         guard isNewConfiguration else {
-            if !newConnection.isConfigured {
-                error = "Please configure your credentials in Preferences"
+            issue = newConnection.configurationIssue.map {
+                MonitorIssue(kind: .notConfigured, message: $0)
             }
             return
         }
 
-        if newConnection.isConfigured {
-            print("[SlurmMonitor] updateConnection called: \(newConnection.username)@\(newConnection.host)")
-        } else {
-            print("[SlurmMonitor] updateConnection called with incomplete settings - not connecting")
-        }
-
+        fetchTask?.cancel()
+        fetchCancellationToken?.cancel()
+        fetchTask = nil
+        fetchCancellationToken = nil
+        fetchGeneration &+= 1
         connection = newConnection
         latestFetchDate = nil
         fetchInFlight = false
         jobs = []
+        runningJobCount = 0
+        pendingJobCount = 0
+        otherJobCount = 0
         lastFetchDate = nil
-        error = newConnection.isConfigured ? nil : "Please configure your credentials in Preferences"
+        lastSuccessfulFetchDate = nil
+        issue = newConnection.configurationIssue.map {
+            MonitorIssue(kind: .notConfigured, message: $0)
+        }
         isFetching = false
         consecutiveFailures = 0
         isThrottled = false
-        print("[SlurmMonitor] Throttle and failure counter reset")
-
-        if newConnection.isConfigured && !wasConfigured {
-            print("[SlurmMonitor] Connection now valid - auto-triggering fetch")
-            fetch(force: false)
-        }
     }
 
     func timeUntilNextAllowedRefresh(from date: Date = Date()) -> TimeInterval? {
         guard let lastFetchDate else { return nil }
         let remaining = refreshCooldown - date.timeIntervalSince(lastFetchDate)
         return remaining > 0 ? remaining : nil
+    }
+
+    private func monitorIssue(for error: Error) -> MonitorIssue {
+        if let failure = error as? ConnectionFailure {
+            switch failure.kind {
+            case .notConfigured:
+                return MonitorIssue(kind: .notConfigured, message: failure.message)
+            case .sshAuthenticationFailed:
+                return MonitorIssue(kind: .sshAuthenticationFailed, message: failure.message)
+            case .remoteCommandMissing:
+                return MonitorIssue(kind: .remoteCommandMissing, message: failure.message)
+            case .invalidResponse:
+                return MonitorIssue(kind: .invalidResponse, message: failure.message)
+            case .transportFailure:
+                return MonitorIssue(kind: .transportFailure, message: failure.message)
+            }
+        }
+
+        if let sshError = error as? SSHClientError {
+            return MonitorIssue(kind: .transportFailure, message: sshError.localizedDescription)
+        }
+
+        return MonitorIssue(kind: .transportFailure, message: error.localizedDescription)
+    }
+
+    nonisolated static func abbreviatedJobCount(_ count: Int) -> String {
+        switch count {
+        case ..<100:
+            return "\(count)"
+        case 100..<1_000:
+            return "100+"
+        case 1_000..<10_000:
+            return "1K+"
+        case 10_000..<100_000:
+            return "10K+"
+        case 100_000..<1_000_000:
+            return "100K+"
+        case 1_000_000..<10_000_000:
+            return "1M+"
+        case 10_000_000..<100_000_000:
+            return "10M+"
+        default:
+            return "100M+"
+        }
     }
 }
