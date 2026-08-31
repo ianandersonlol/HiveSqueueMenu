@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Testing
 @testable import HiveSqueueMenu
@@ -5,6 +6,66 @@ import Testing
 @Suite("Monitor lifecycle")
 @MainActor
 struct SlurmMonitorTests {
+    @Test
+    func monitorExposesDeterministicLifecycleState() async throws {
+        let value = try snapshot(jobID: 7, name: "stateful")
+        let monitor = SlurmMonitor(connection: connection(host: "cluster.example"), refreshCooldown: 0) { _, _ in
+            try await Task.sleep(for: .milliseconds(50))
+            return value
+        }
+
+        #expect(monitor.state == .idle)
+
+        monitor.fetch(force: true)
+        #expect(monitor.state == .loading(previousSnapshotAvailable: false))
+
+        await waitUntil { !monitor.isFetching }
+        #expect(monitor.state == .loaded)
+        #expect(monitor.accessibilityStatus == "1 running, 0 pending, 0 other.")
+    }
+
+    @Test
+    func identicalConnectionUpdatePreservesRuntimeFailure() async {
+        let currentConnection = connection(host: "cluster.example")
+        let monitor = SlurmMonitor(connection: currentConnection, refreshCooldown: 0) { _, _ in
+            throw ConnectionFailure(
+                kind: .transportFailure,
+                message: "Network is unreachable.",
+                stdout: "",
+                stderr: ""
+            )
+        }
+
+        monitor.fetch(force: true)
+        await waitUntil { !monitor.isFetching }
+        let failedState = monitor.state
+
+        monitor.updateConnection(currentConnection)
+
+        #expect(monitor.state == failedState)
+        #expect(monitor.issue?.kind == .transportFailure)
+        #expect(monitor.issue?.message == "Network is unreachable.")
+    }
+
+    @Test
+    func persistentConnectionSynchronizationDoesNotDependOnMenuAppearance() {
+        let oldConnection = connection(host: "old.example")
+        let newConnection = connection(host: "new.example")
+        let connections = CurrentValueSubject<ConnectionSettings, Never>(oldConnection)
+        let monitor = SlurmMonitor(connection: oldConnection)
+        let synchronization = MonitorConnectionSynchronization(
+            monitor: monitor,
+            connections: connections
+        )
+
+        withExtendedLifetime(synchronization) {
+            connections.send(newConnection)
+        }
+
+        #expect(monitor.host == "new.example")
+        #expect(monitor.state == .idle)
+    }
+
     @Test
     func obsoleteFetchCannotOverwriteNewConnection() async throws {
         let oldConnection = connection(host: "old.example")
@@ -56,7 +117,9 @@ struct SlurmMonitorTests {
             username: "user",
             clusterProfile: .standard,
             authentication: .agent,
-            password: nil,
+            hostTrustPolicy: .strict,
+            accountPassword: nil,
+            keyPassphrase: nil,
             remoteCommand: AppConfig.remoteCommand
         )
     }

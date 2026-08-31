@@ -1,5 +1,11 @@
 import Foundation
 
+enum QueueBucket: Equatable, Sendable {
+    case running
+    case pending
+    case other
+}
+
 enum JobState: Equatable, Sendable {
     case running
     case pending
@@ -66,6 +72,20 @@ enum JobState: Equatable, Sendable {
                 return trimmed.uppercased()
             }
             return trimmed.capitalized
+        }
+    }
+
+    /// The queue summary deliberately groups transition states with active work.
+    /// This is the single classification used by both optimized text output and
+    /// custom-command JSON responses.
+    var queueBucket: QueueBucket {
+        switch self {
+        case .running, .configuring, .completing:
+            return .running
+        case .pending:
+            return .pending
+        case .completed, .failed, .cancelled, .suspended, .unknown:
+            return .other
         }
     }
 }

@@ -15,8 +15,12 @@ enum AppConfig {
     static let sshConnectTimeout: TimeInterval = 15
     /// Hard cap on total SSH command runtime before we kill it and surface an error.
     static let sshCommandTimeout: TimeInterval = 45
+    /// Maximum captured stdout per SSH command. Pipe data beyond this is still drained but not retained.
+    static let maxSSHStdoutBytes = 16 * 1_024 * 1_024
+    /// Maximum captured stderr per SSH command.
+    static let maxSSHStderrBytes = 2 * 1_024 * 1_024
     /// Command executed on the cluster to obtain job JSON.
     static let remoteCommand = "squeue --me --json"
-    /// Environment variable used by the fixed askpass helper. The password is never written into the helper source.
-    static let askPassSecretEnvironmentKey = "HIVESQUEUE_ASKPASS_SECRET"
+    /// Upper bound for one atomic credential response in the in-memory askpass FIFO.
+    static let maxCredentialUTF8Bytes = 512
 }

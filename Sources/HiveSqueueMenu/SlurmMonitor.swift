@@ -32,14 +32,20 @@ struct MonitorIssue: Equatable {
     }
 }
 
+enum SlurmMonitorState: Equatable {
+    case idle
+    case loading(previousSnapshotAvailable: Bool)
+    case loaded
+    case failed(issue: MonitorIssue, previousSnapshotAvailable: Bool)
+}
+
 @MainActor
 final class SlurmMonitor: ObservableObject {
     typealias SnapshotFetcher = @Sendable (ConnectionSettings, SSHCancellationToken) async throws -> SlurmQueueSnapshot
 
     @Published var jobs: [SlurmJob] = []
-    @Published var issue: MonitorIssue?
+    @Published private(set) var state: SlurmMonitorState
     @Published private(set) var host: String
-    @Published private(set) var isFetching: Bool = false
     @Published private(set) var lastFetchDate: Date?
     @Published private(set) var lastSuccessfulFetchDate: Date?
     @Published private(set) var isConfigured: Bool = false
@@ -48,15 +54,28 @@ final class SlurmMonitor: ObservableObject {
     @Published private(set) var otherJobCount: Int = 0
 
     var runningJobs: [SlurmJob] {
-        jobs.filter { $0.displayState == .running }
+        jobs.filter { $0.displayState.queueBucket == .running }
+    }
+
+    var issue: MonitorIssue? {
+        guard case .failed(let issue, _) = state else { return nil }
+        return issue
+    }
+
+    var isFetching: Bool {
+        guard case .loading = state else { return false }
+        return true
     }
 
     var pendingJobs: [SlurmJob] {
-        jobs.filter { $0.displayState == .pending }
+        jobs.filter { $0.displayState.queueBucket == .pending }
     }
 
     var totalJobCount: Int {
-        runningJobCount + pendingJobCount + otherJobCount
+        QueueCounts.saturatingAdd(
+            QueueCounts.saturatingAdd(runningJobCount, pendingJobCount),
+            otherJobCount
+        )
     }
 
     var menuTitle: String {
@@ -71,6 +90,20 @@ final class SlurmMonitor: ObservableObject {
         }
 
         return "\(prefix) \(Self.abbreviatedJobCount(totalJobCount))"
+    }
+
+    var accessibilityStatus: String {
+        switch state {
+        case .idle:
+            return "No queue data loaded."
+        case .loading:
+            let counts = "\(runningJobCount) running, \(pendingJobCount) pending, \(otherJobCount) other."
+            return "Refreshing queue. \(counts)"
+        case .loaded:
+            return "\(runningJobCount) running, \(pendingJobCount) pending, \(otherJobCount) other."
+        case .failed(let issue, _):
+            return "\(issue.title). \(issue.message)"
+        }
     }
 
     private var connection: ConnectionSettings
@@ -102,14 +135,22 @@ final class SlurmMonitor: ObservableObject {
         }
         self.host = connection.host.isEmpty ? "Not configured" : connection.host
         self.isConfigured = connection.isConfigured
-        self.issue = connection.configurationIssue.map {
-            MonitorIssue(kind: .notConfigured, message: $0)
+        if let configurationIssue = connection.configurationIssue {
+            self.state = .failed(
+                issue: MonitorIssue(kind: .notConfigured, message: configurationIssue),
+                previousSnapshotAvailable: false
+            )
+        } else {
+            self.state = .idle
         }
     }
 
     func fetch(force: Bool = false) {
         if let configurationIssue = connection.configurationIssue {
-            issue = MonitorIssue(kind: .notConfigured, message: configurationIssue)
+            state = .failed(
+                issue: MonitorIssue(kind: .notConfigured, message: configurationIssue),
+                previousSnapshotAvailable: lastSuccessfulFetchDate != nil
+            )
             return
         }
 
@@ -118,9 +159,12 @@ final class SlurmMonitor: ObservableObject {
                 isThrottled = false
                 consecutiveFailures = 0
             } else {
-                issue = MonitorIssue(
-                    kind: .throttled,
-                    message: "Refresh is paused after repeated failures. Use Retry after fixing settings, or test the connection in Preferences."
+                state = .failed(
+                    issue: MonitorIssue(
+                        kind: .throttled,
+                        message: "Refresh is paused after repeated failures. Use Retry after fixing settings, or test the connection in Preferences."
+                    ),
+                    previousSnapshotAvailable: lastSuccessfulFetchDate != nil
                 )
                 return
             }
@@ -146,7 +190,7 @@ final class SlurmMonitor: ObservableObject {
         let cancellationToken = SSHCancellationToken()
         fetchCancellationToken = cancellationToken
         fetchInFlight = true
-        isFetching = true
+        state = .loading(previousSnapshotAvailable: lastSuccessfulFetchDate != nil)
 
         fetchTask = Task { [weak self] in
             guard let self else { return }
@@ -160,20 +204,27 @@ final class SlurmMonitor: ObservableObject {
                 runningJobCount = snapshot.runningCount
                 pendingJobCount = snapshot.pendingCount
                 otherJobCount = snapshot.otherCount
-                issue = nil
+                state = .loaded
                 consecutiveFailures = 0
             } catch {
                 guard !Task.isCancelled, generation == fetchGeneration else { return }
                 consecutiveFailures += 1
-                issue = monitorIssue(for: error)
+                let fetchIssue: MonitorIssue
 
                 if consecutiveFailures >= maxConsecutiveFailures {
                     isThrottled = true
-                    issue = MonitorIssue(
+                    fetchIssue = MonitorIssue(
                         kind: .throttled,
                         message: "Refresh is paused after \(consecutiveFailures) failures. Fix the connection settings, then use Retry or Test Connection."
                     )
+                } else {
+                    fetchIssue = monitorIssue(for: error)
                 }
+
+                state = .failed(
+                    issue: fetchIssue,
+                    previousSnapshotAvailable: lastSuccessfulFetchDate != nil
+                )
             }
 
             let finished = Date()
@@ -182,7 +233,6 @@ final class SlurmMonitor: ObservableObject {
             if issue == nil {
                 lastSuccessfulFetchDate = finished
             }
-            isFetching = false
             fetchInFlight = false
             fetchTask = nil
             fetchCancellationToken = nil
@@ -190,16 +240,7 @@ final class SlurmMonitor: ObservableObject {
     }
 
     func updateConnection(_ newConnection: ConnectionSettings) {
-        host = newConnection.host.isEmpty ? "Not configured" : newConnection.host
-        let isNewConfiguration = newConnection != connection
-        isConfigured = newConnection.isConfigured
-
-        guard isNewConfiguration else {
-            issue = newConnection.configurationIssue.map {
-                MonitorIssue(kind: .notConfigured, message: $0)
-            }
-            return
-        }
+        guard newConnection != connection else { return }
 
         fetchTask?.cancel()
         fetchCancellationToken?.cancel()
@@ -207,6 +248,8 @@ final class SlurmMonitor: ObservableObject {
         fetchCancellationToken = nil
         fetchGeneration &+= 1
         connection = newConnection
+        host = newConnection.host.isEmpty ? "Not configured" : newConnection.host
+        isConfigured = newConnection.isConfigured
         latestFetchDate = nil
         fetchInFlight = false
         jobs = []
@@ -215,10 +258,14 @@ final class SlurmMonitor: ObservableObject {
         otherJobCount = 0
         lastFetchDate = nil
         lastSuccessfulFetchDate = nil
-        issue = newConnection.configurationIssue.map {
-            MonitorIssue(kind: .notConfigured, message: $0)
+        if let configurationIssue = newConnection.configurationIssue {
+            state = .failed(
+                issue: MonitorIssue(kind: .notConfigured, message: configurationIssue),
+                previousSnapshotAvailable: false
+            )
+        } else {
+            state = .idle
         }
-        isFetching = false
         consecutiveFailures = 0
         isThrottled = false
     }

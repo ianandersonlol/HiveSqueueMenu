@@ -14,7 +14,14 @@ struct SlurmMenuView: View {
                 ErrorBanner(
                     title: issue.title,
                     message: issue.message,
-                    retryAction: { monitor.fetch(force: true) }
+                    actionTitle: issue.kind == .notConfigured ? "Open Settings" : "Retry",
+                    action: {
+                        if issue.kind == .notConfigured {
+                            openSettings()
+                        } else {
+                            monitor.fetch(force: true)
+                        }
+                    }
                 )
             }
             jobsSection
@@ -149,13 +156,40 @@ struct SlurmMenuView: View {
     }
 
     private var footerBar: some View {
-        HStack(spacing: 10) {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                footerCounts
+                Spacer(minLength: 8)
+                footerActions
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    footerCounts
+                    Spacer(minLength: 0)
+                }
+                HStack {
+                    Spacer(minLength: 0)
+                    footerActions
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    @ViewBuilder
+    private var footerCounts: some View {
+        Group {
             QueueCountPill(color: .green, label: "Running", count: monitor.runningJobCount)
             QueueCountPill(color: .orange, label: "Pending", count: monitor.pendingJobCount)
             if monitor.otherJobCount > 0 {
                 QueueCountPill(color: .blue, label: "Other", count: monitor.otherJobCount)
             }
-            Spacer()
+        }
+    }
+
+    private var footerActions: some View {
+        HStack(spacing: 10) {
             Button {
                 openSettings()
             } label: {
@@ -164,12 +198,43 @@ struct SlurmMenuView: View {
             .font(.footnote.weight(.semibold))
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
+
+            Button {
+                NSApplication.shared.terminate(nil)
+            } label: {
+                Label("Quit", systemImage: "power")
+            }
+            .font(.footnote.weight(.semibold))
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Quit Hive Squeue Menu")
         }
-        .padding(.top, 2)
+    }
+}
+
+struct MenuBarStatusLabel: View {
+    @ObservedObject var monitor: SlurmMonitor
+
+    var body: some View {
+        HStack(spacing: 4) {
+            MenuStatusIcon(
+                runningCount: monitor.runningJobCount,
+                pendingCount: monitor.pendingJobCount,
+                otherCount: monitor.otherJobCount,
+                isFetching: monitor.isFetching,
+                issue: monitor.issue
+            )
+            Text(monitor.menuTitle)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Hive Slurm Queue")
+        .accessibilityValue(Text(monitor.accessibilityStatus))
     }
 }
 
 struct MenuStatusIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let runningCount: Int
     let pendingCount: Int
     let otherCount: Int
@@ -193,8 +258,11 @@ struct MenuStatusIcon: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .stroke(Color.blue, lineWidth: 1.7)
                         .frame(width: iconSize, height: iconSize)
-                        .rotationEffect(.degrees(isFetching ? 360 : 0))
-                        .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: isFetching)
+                        .rotationEffect(.degrees(isFetching && !reduceMotion ? 360 : 0))
+                        .animation(
+                            reduceMotion ? nil : .linear(duration: 1).repeatForever(autoreverses: false),
+                            value: isFetching
+                        )
                 }
             }
 
@@ -219,7 +287,10 @@ struct MenuStatusIcon: View {
     }
 
     private var totalJobs: Int {
-        runningCount + pendingCount + otherCount
+        QueueCounts.saturatingAdd(
+            QueueCounts.saturatingAdd(runningCount, pendingCount),
+            otherCount
+        )
     }
 
     private var backgroundTint: Color {
@@ -287,7 +358,7 @@ struct QueueCountPill: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Text("\(count)")
+            Text(SlurmMonitor.abbreviatedJobCount(count))
                 .font(.system(.footnote, design: .rounded).weight(.bold))
                 .foregroundStyle(color)
             Text(label)
@@ -297,6 +368,8 @@ struct QueueCountPill: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(.thinMaterial, in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label): \(count)")
     }
 }
 
@@ -416,7 +489,8 @@ struct StateBadge: View {
 struct ErrorBanner: View {
     let title: String
     let message: String
-    var retryAction: (() -> Void)?
+    var actionTitle = "Retry"
+    var action: (() -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -431,8 +505,8 @@ struct ErrorBanner: View {
                     .font(.body)
                     .foregroundStyle(.primary)
                 
-                if let retryAction {
-                    Button("Retry", action: retryAction)
+                if let action {
+                    Button(actionTitle, action: action)
                         .font(.body.weight(.semibold))
                 }
             }

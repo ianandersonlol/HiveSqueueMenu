@@ -102,6 +102,26 @@ struct SlurmJobDecodingTests {
     }
 
     @Test
+    func appliesSqueueFormatterPrecedenceToJSONStateFlags() throws {
+        let jobs = try parse(
+            """
+            {"jobs":[
+              {"job_id":1,"job_state":["PENDING","CONFIGURING"]},
+              {"job_id":2,"job_state":["CANCELLED","COMPLETING"]},
+              {"job_id":3,"job_state":["RUNNING","SIGNALING"]},
+              {"job_id":4,"job_state":["PENDING","CONFIGURING","COMPLETING"]}
+            ]}
+            """
+        )
+
+        let jobsByID = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
+        #expect(jobsByID[1]?.displayState == .configuring)
+        #expect(jobsByID[2]?.displayState == .completing)
+        #expect(jobsByID[3]?.displayState == .unknown("SIGNALING"))
+        #expect(jobsByID[4]?.displayState == .completing)
+    }
+
+    @Test
     func invalidJSONReportsCapturedOutput() {
         do {
             _ = try SlurmService.parseJobs(from: Data("not-json".utf8), stderr: "wrapper stderr")
@@ -117,14 +137,14 @@ struct SlurmJobDecodingTests {
 
     @Test
     func authenticationValidationMatchesSelectedMode() {
-        let passwordless = settings(authentication: .passwordOnly, password: nil)
+        let passwordless = settings(authentication: .passwordOnly, accountPassword: nil)
         #expect(passwordless.isConfigured)
         #expect(passwordless.configurationIssue != nil)
 
-        let withPassword = settings(authentication: .passwordOnly, password: "secret")
+        let withPassword = settings(authentication: .passwordOnly, accountPassword: "secret")
         #expect(withPassword.configurationIssue == nil)
 
-        let missingKey = settings(authentication: .key(path: ""), password: nil)
+        let missingKey = settings(authentication: .key(path: ""), accountPassword: nil)
         #expect(missingKey.configurationIssue != nil)
     }
 
@@ -140,13 +160,15 @@ struct SlurmJobDecodingTests {
         try SlurmService.parseJobs(from: Data(json.utf8))
     }
 
-    private func settings(authentication: SSHAuthentication, password: String?) -> ConnectionSettings {
+    private func settings(authentication: SSHAuthentication, accountPassword: String?) -> ConnectionSettings {
         ConnectionSettings(
             host: "cluster.example",
             username: "user",
             clusterProfile: .standard,
             authentication: authentication,
-            password: password,
+            hostTrustPolicy: .strict,
+            accountPassword: accountPassword,
+            keyPassphrase: nil,
             remoteCommand: AppConfig.remoteCommand
         )
     }

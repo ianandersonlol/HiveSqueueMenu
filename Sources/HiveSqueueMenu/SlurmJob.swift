@@ -4,6 +4,7 @@ struct SlurmJob: Decodable, Sendable {
     let id: Int
     let arrayJobId: Int?
     let arrayTaskId: Int?
+    let arrayTaskExpression: String?
     let heterogeneousJobId: Int?
     let heterogeneousJobOffset: Int?
     let name: String
@@ -32,6 +33,7 @@ struct SlurmJob: Decodable, Sendable {
         case id = "job_id"
         case arrayJobId = "array_job_id"
         case arrayTaskId = "array_task_id"
+        case arrayTaskExpression = "array_task_string"
         case heterogeneousJobId = "het_job_id"
         case heterogeneousJobOffset = "het_job_offset"
         case name
@@ -59,6 +61,7 @@ struct SlurmJob: Decodable, Sendable {
         self.id = container.decodeSlurmInt(forKey: .id)
         self.arrayJobId = SlurmJob.normalizedEpoch(container.decodeSlurmOptionalInt(forKey: .arrayJobId))
         self.arrayTaskId = container.decodeSlurmOptionalInt(forKey: .arrayTaskId)
+        self.arrayTaskExpression = container.decodeSlurmOptionalString(forKey: .arrayTaskExpression)
         self.heterogeneousJobId = SlurmJob.normalizedEpoch(container.decodeSlurmOptionalInt(forKey: .heterogeneousJobId))
         self.heterogeneousJobOffset = container.decodeSlurmOptionalInt(forKey: .heterogeneousJobOffset)
         self.name = container.decodeSlurmString(forKey: .name)
@@ -89,7 +92,44 @@ struct SlurmJob: Decodable, Sendable {
     }
 
     var displayState: JobState {
-        JobState(rawValue: state) ?? .unknown(state)
+        // Slurm's `%T` formatter applies a fixed precedence when state flags are
+        // present. JSON exposes the base state plus an independently ordered
+        // flag list, so reproduce that formatter precedence to keep optimized
+        // summaries and JSON detail/fallback paths consistent.
+        for preferredFlag in Self.displayStateFlagPrecedence {
+            if let rawFlag = stateFlags.first(where: {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == preferredFlag
+            }) {
+                return JobState(rawValue: rawFlag) ?? .unknown(rawFlag)
+            }
+        }
+        return JobState(rawValue: state) ?? .unknown(state)
+    }
+
+    private static let displayStateFlagPrecedence = [
+        "COMPLETING",
+        "STAGE_OUT",
+        "CONFIGURING",
+        "EXPEDITING",
+        "RESIZING",
+        "REQUEUED",
+        "REQUEUE_FED",
+        "REQUEUE_HOLD",
+        "SPECIAL_EXIT",
+        "STOPPED",
+        "REVOKED",
+        "RESV_DEL_HOLD",
+        "SIGNALING"
+    ]
+
+    /// Number of array tasks represented by this scheduler record.
+    /// Individual jobs and individually materialized array tasks both count as one.
+    var queueTaskCount: Int {
+        guard let arrayTaskExpression,
+              let count = SlurmArrayExpression.taskCount(in: arrayTaskExpression) else {
+            return 1
+        }
+        return count
     }
 
     var elapsedSeconds: Int? {

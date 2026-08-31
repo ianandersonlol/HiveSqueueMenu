@@ -1,6 +1,26 @@
 import Foundation
 import Security
 
+protocol CredentialStoring: Sendable {
+    func save(_ secret: String, service: String, account: String) throws
+    func load(service: String, account: String) throws -> String?
+    func delete(service: String, account: String) throws
+}
+
+struct KeychainCredentialStore: CredentialStoring {
+    func save(_ secret: String, service: String, account: String) throws {
+        try KeychainHelper.savePassword(secret, service: service, account: account)
+    }
+
+    func load(service: String, account: String) throws -> String? {
+        try KeychainHelper.loadPassword(service: service, account: account)
+    }
+
+    func delete(service: String, account: String) throws {
+        try KeychainHelper.deletePassword(service: service, account: account)
+    }
+}
+
 enum KeychainHelper {
     static func savePassword(_ password: String, service: String, account: String) throws {
         guard let passwordData = password.data(using: .utf8) else {

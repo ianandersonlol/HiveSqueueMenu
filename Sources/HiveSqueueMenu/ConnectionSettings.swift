@@ -19,6 +19,22 @@ enum SSHAuthenticationMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum SSHHostTrustPolicy: String, CaseIterable, Identifiable, Sendable {
+    case strict
+    case acceptNew
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .strict:
+            return "Verified Hosts Only"
+        case .acceptNew:
+            return "Trust New Hosts Automatically"
+        }
+    }
+}
+
 enum SSHAuthentication: Equatable, Sendable {
     case agent
     case key(path: String)
@@ -46,7 +62,9 @@ struct ConnectionSettings: Equatable, Sendable {
     var username: String
     var clusterProfile: ClusterProfile
     var authentication: SSHAuthentication
-    var password: String?
+    var hostTrustPolicy: SSHHostTrustPolicy
+    var accountPassword: String?
+    var keyPassphrase: String?
     var remoteCommand: String
 }
 
@@ -57,7 +75,9 @@ extension ConnectionSettings {
             username: "",
             clusterProfile: .ucDavisHive,
             authentication: .agent,
-            password: nil,
+            hostTrustPolicy: .strict,
+            accountPassword: nil,
+            keyPassphrase: nil,
             remoteCommand: AppConfig.remoteCommand
         )
     }
@@ -68,7 +88,9 @@ extension ConnectionSettings {
             username: "",
             clusterProfile: .standard,
             authentication: .agent,
-            password: nil,
+            hostTrustPolicy: .strict,
+            accountPassword: nil,
+            keyPassphrase: nil,
             remoteCommand: AppConfig.remoteCommand
         )
     }
@@ -88,8 +110,22 @@ extension ConnectionSettings {
         }
 
         if authentication == .passwordOnly,
-           password?.isEmpty != false {
-            return "Enter a password for Password Only authentication."
+           accountPassword?.isEmpty != false {
+            return "Enter an account password for Password Only authentication."
+        }
+
+        if authentication == .passwordOnly, hostTrustPolicy == .acceptNew {
+            return "Password Only requires Verified Hosts Only. Verify the host fingerprint and add it to known_hosts before sending an account password."
+        }
+
+        if let accountPassword,
+           accountPassword.utf8.count > AppConfig.maxCredentialUTF8Bytes {
+            return "The account password is too large to pass safely to OpenSSH."
+        }
+
+        if let keyPassphrase,
+           keyPassphrase.utf8.count > AppConfig.maxCredentialUTF8Bytes {
+            return "The private-key passphrase is too large to pass safely to OpenSSH."
         }
 
         return nil

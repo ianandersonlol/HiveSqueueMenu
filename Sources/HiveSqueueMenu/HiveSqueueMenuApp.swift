@@ -3,42 +3,23 @@ import SwiftUI
 
 @main
 struct HiveSqueueMenuApp: App {
-    @StateObject private var settingsStore: UserSettings
-    @StateObject private var monitor: SlurmMonitor
+    @StateObject private var appModel: HiveSqueueAppModel
 
     init() {
-        let settings = UserSettings()
-        let monitor = SlurmMonitor(connection: settings.connectionSettings)
-        _settingsStore = StateObject(wrappedValue: settings)
-        _monitor = StateObject(wrappedValue: monitor)
+        _appModel = StateObject(wrappedValue: HiveSqueueAppModel())
         NSApplication.shared.setActivationPolicy(.accessory)
     }
 
     var body: some Scene {
         MenuBarExtra {
-            SlurmMenuView(monitor: monitor)
-                .onAppear {
-                    monitor.updateConnection(settingsStore.connectionSettings)
-                }
-                .onChange(of: settingsStore.connectionSettings) { oldValue, newValue in
-                    monitor.updateConnection(newValue)
-                }
+            SlurmMenuView(monitor: appModel.monitor)
         } label: {
-            HStack(spacing: 4) {
-                MenuStatusIcon(
-                    runningCount: monitor.runningJobCount,
-                    pendingCount: monitor.pendingJobCount,
-                    otherCount: monitor.otherJobCount,
-                    isFetching: monitor.isFetching,
-                    issue: monitor.issue
-                )
-                Text(monitor.menuTitle)
-            }
+            MenuBarStatusLabel(monitor: appModel.monitor)
         }
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView(settings: settingsStore)
+            SettingsView(settings: appModel.settingsStore)
         }
     }
 }
